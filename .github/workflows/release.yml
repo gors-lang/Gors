@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
@@ -39,10 +39,14 @@ jobs:
           go-version: '1.27.3'
           cache: false
       - name: Install C23 toolchain
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          if ! version=$(gcc -dumpversion 2>/dev/null) || (( ${version%%.*} < 14 )); then
+            sudo apt-get update
+            sudo apt-get install -y gcc-14
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          fi
+          gcc --version
       - name: Verify tag and compiler version
         run: |
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
