@@ -18,6 +18,8 @@ import (
 // Each case is compiled and executed independently by both toolchains. Expected
 // output prevents two equally broken backends from validating one another.
 func TestBackendExecution(t *testing.T) {
+	t.Parallel()
+
 	type executionCase struct {
 		name, src, want string
 		fails           bool

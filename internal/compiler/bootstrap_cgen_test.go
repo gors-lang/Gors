@@ -16,6 +16,8 @@ import (
 )
 
 func TestBootstrapCEmitter(t *testing.T) {
+	t.Parallel()
+
 	entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
 	dir := t.TempDir()
 	write := func(name, source string) string {
