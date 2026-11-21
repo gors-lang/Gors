@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	bootstrapcgen "gors/bootstrap/cgen"
 	"gors/internal/ast"
 	"gors/internal/sema"
 )
@@ -227,6 +228,18 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
 		if sema.MonoName(t) == "Result_bool_str" {
 			g.out.WriteString(fileWriteRuntime)
 		}
+	}
+	if info.UsesNativeC {
+		native, err := bootstrapcgen.NativeRuntime()
+		if err != nil {
+			return "", err
+		}
+		g.out.WriteString(native)
+		g.out.WriteString(`
+static int64_t gors_native_c(gors_str source, gors_str output, Slice_str args) {
+    return native_c(source, strlen(source), output, args.data, (size_t)args.len);
+}
+`)
 	}
 	g.out.WriteString("\n")
 
@@ -1565,6 +1578,11 @@ func (g *gen) call(ex *ast.Call) string {
 			return "gors_write_text(" + path + ", " + data + ")"
 		case "bytes_to_string":
 			return "gors_bytes_to_string(" + g.expr(ex.Args[0]) + ")"
+		case "native_c":
+			source := g.strOperand(ex.Args[0])
+			output := g.strOperand(ex.Args[1])
+			args := g.expr(ex.Args[2])
+			return "gors_native_c(" + source + ", " + output + ", " + args + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {

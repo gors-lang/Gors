@@ -3,7 +3,7 @@
 [English](README.md)
 
 [![CI](https://github.com/gors-lang/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gors-lang/Gors/actions/workflows/ci.yml)
-[![Предварительный релиз v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.3)
+[![Предварительный релиз v1.0.0-alpha.4](https://img.shields.io/badge/release-v1.0.0--alpha.4-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.4)
 
 GoRs — компилируемый язык с простым синтаксисом и статической проверкой
 владения и заимствований. Основной компилятор генерирует C23 или Go.
@@ -19,10 +19,10 @@ GoRs — компилируемый язык с простым синтакси�
 
 | Платформа | Скачать | Запустить из распакованного архива |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/gors-1.0.0-alpha.4-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/gors-1.0.0-alpha.4-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
+Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/SHA256SUMS)
 
 ```rust
 fn main() {
@@ -36,7 +36,7 @@ fn main() {
 | Компонент | Что уже работает |
 | --- | --- |
 | Основной компилятор (Go) | Бэкенды C23 и Go, файловые модули, структуры и методы, проверка владения и заимствований |
-| [Bootstrap-компилятор](#архивы-100-alpha3) (GoRs) | Самосборка через C23, файловые модули, структуры, методы, слайсы, ссылки, `Option`, `Result` и `?` |
+| [Bootstrap-компилятор](#архивы-100-alpha4) (GoRs) | Самосборка через C23, команды `build` и `run`, файловые модули, структуры, методы, слайсы, ссылки, `Option`, `Result` и `?` |
 
 Полная проверка владения и времён жизни пока остаётся в основном компиляторе.
 
@@ -487,7 +487,7 @@ help: Borrow the value with & instead of transferring ownership, or create a new
 Выход за границы в обоих бэкендах завершает процесс с кодом 1 и сообщением
 `gors: index N out of bounds (len M)` в stderr.
 
-### Архивы 1.0.0-alpha.3
+### Архивы 1.0.0-alpha.4
 
 ```sh
 go run ./tools/package -out dist
@@ -495,7 +495,7 @@ go run ./tools/package -out dist
 
 Создаются архивы для Linux amd64 и Windows amd64 с бинарником `gors`,
 проверенным `gors-bootstrap.c`, исходниками bootstrap, примерами и документацией. Контрольные суммы
-записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.3`.
+записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.4`.
 
 Из распакованного архива GCC может собрать bootstrap-компилятор без Go.
 Следующая команда повторяет генерацию C, а `cmp` сверяет результат:

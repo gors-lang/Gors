@@ -23,10 +23,14 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
 	g.line("")
 	g.line("import (\"fmt\"; \"os\")")
 	mono := sema.MonoTypes(info)
-	for _, t := range mono {
-		if sema.MonoName(t) == "Result_bool_str" {
-			g.line("import \"path/filepath\"")
-			break
+	if info.UsesNativeC {
+		g.line("import (\"os/exec\"; \"path/filepath\"; \"runtime\")")
+	} else {
+		for _, t := range mono {
+			if sema.MonoName(t) == "Result_bool_str" {
+				g.line("import \"path/filepath\"")
+				break
+			}
 		}
 	}
 	g.line("")
@@ -113,6 +117,9 @@ func __gors_string_slice(s string, low, high int64) string {
 
 `)
 		}
+	}
+	if info.UsesNativeC {
+		g.out.WriteString(nativeRuntime)
 	}
 	for _, fn := range prog.Funcs {
 		g.genFunc(fn)
@@ -790,6 +797,11 @@ func (g *gen) call(ex *ast.Call) string {
 			return "__gors_write_text(" + g.expr(ex.Args[0]) + ", " + g.expr(ex.Args[1]) + ")"
 		case "bytes_to_string":
 			return "__gors_bytes_to_string(" + g.expr(ex.Args[0]) + ")"
+		case "native_c":
+			source := g.expr(ex.Args[0])
+			output := g.expr(ex.Args[1])
+			args := g.expr(ex.Args[2])
+			return "__gors_native_c(" + source + ", " + output + ", " + args + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {

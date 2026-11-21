@@ -130,8 +130,9 @@ type Info struct {
 	MatchTypes map[*ast.MatchArm]Type
 	IfLetTypes map[*ast.IfLetStmt]Type
 	// Moves marks expressions that transfer ownership.
-	Moves     map[ast.Expr]bool
-	ExprTypes map[ast.Expr]Type
-	LetTypes  map[*ast.LetStmt]Type
-	ForTypes  map[*ast.ForStmt]Type
+	Moves       map[ast.Expr]bool
+	ExprTypes   map[ast.Expr]Type
+	LetTypes    map[*ast.LetStmt]Type
+	ForTypes    map[*ast.ForStmt]Type
+	UsesNativeC bool
 }

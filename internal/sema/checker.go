@@ -1150,6 +1150,18 @@ func (c *checker) checkCall(ex *ast.Call) Type {
 				c.errf("E186", ex.Args[0].Pos(), "bytes_to_string expects []int, got %s", t.String())
 			}
 			return String
+		case "native_c":
+			if len(ex.Args) != 3 {
+				c.errf("E187", ex.At, "native_c expects source, output path, and arguments")
+				return nil
+			}
+			for i, want := range []Type{String, String, &Slice{Elem: String}} {
+				if actual := c.checkExprExpected(ex.Args[i], want); actual != nil && !sameType(actual, want) {
+					c.errf("E187", ex.Args[i].Pos(), "native_c argument %d expects %s", i+1, want.String())
+				}
+			}
+			c.info.UsesNativeC = true
+			return Int
 		case "push":
 			if len(ex.Args) != 2 {
 				c.errf("E155", ex.At, "push takes exactly two arguments: push(&mut xs, value)")
@@ -1261,7 +1273,7 @@ func (c *checker) resolveMethod(field *ast.Field) (*FuncSig, *StructT) {
 
 func isBuiltin(name string) bool {
 	switch name {
-	case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string":
+	case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
 		return true
 	}
 	return false

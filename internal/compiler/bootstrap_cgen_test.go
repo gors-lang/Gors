@@ -407,6 +407,73 @@ func TestBootstrapSelfHost(t *testing.T) {
 	if out != "25\nhello\n" || errOut != "" {
 		t.Fatalf("self-compiled compiler's program gave stdout %q stderr %q", out, errOut)
 	}
+	echo := filepath.Join("..", "..", "examples", "echo.gors")
+	out, errOut = runBootstrapCommand(t, stage3, 0, "run", echo, "--", "quoted \"text\"", "", "trailing\\")
+	if out != "quoted \"text\"  trailing\\\n" || errOut != "" {
+		t.Fatalf("self-compiled compiler run gave stdout %q stderr %q", out, errOut)
+	}
+}
+
+func TestBootstrapNativeCLI(t *testing.T) {
+	entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
+	example := func(name string) string { return filepath.Join("..", "..", "examples", name+".gors") }
+	for _, backend := range []compiler.Backend{compiler.BackendC, compiler.BackendGo} {
+		t.Run(string(backend), func(t *testing.T) {
+			cli := buildBootstrapTool(t, entry, backend)
+			dir := t.TempDir()
+			output := filepath.Join(dir, "fib output")
+			if runtime.GOOS == "windows" {
+				output += ".exe"
+			}
+			if err := os.WriteFile(output, []byte("existing output"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, errOut := runBootstrapCommand(t, cli, 0, "build", example("fib"), "-o", output)
+			if out != "" || errOut != "" {
+				t.Fatalf("build gave stdout %q stderr %q", out, errOut)
+			}
+			out, errOut = runBootstrapCommand(t, output, 0)
+			if out != "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n" || errOut != "" {
+				t.Fatalf("fib gave stdout %q stderr %q", out, errOut)
+			}
+			before, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bad := filepath.Join(dir, "bad.gors")
+			if err := os.WriteFile(bad, []byte("fn main() { let x: int = true }"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, errOut = runBootstrapCommand(t, cli, 1, "build", bad, "-o", output)
+			if out != "" || !strings.Contains(errOut, "initializer type mismatch") {
+				t.Fatalf("bad build gave stdout %q stderr %q", out, errOut)
+			}
+			if after, err := os.ReadFile(output); err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed build modified its output: %v", err)
+			}
+			out, errOut = runBootstrapCommand(t, cli, 0, "run", example("echo"), "--", "hello world", "--flag", "", `a\"b`, `tail\`)
+			if out != "hello world --flag  a\\\"b tail\\\n" || errOut != "" {
+				t.Fatalf("echo gave stdout %q stderr %q", out, errOut)
+			}
+			input := filepath.Join(dir, "binary input")
+			if err := os.WriteFile(input, []byte{0, 10, 255}, 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, errOut = runBootstrapCommand(t, cli, 0, "run", example("wc"), "--", input)
+			if out != "1 3 "+input+"\n" || errOut != "" {
+				t.Fatalf("wc gave stdout %q stderr %q", out, errOut)
+			}
+			missing := input + ".missing"
+			out, errOut = runBootstrapCommand(t, cli, 1, "run", example("wc"), "--", missing)
+			if out != "" || errOut != "wc: "+missing+" could not read file\n" {
+				t.Fatalf("wc error gave stdout %q stderr %q", out, errOut)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 3 {
+				t.Fatalf("unexpected native build workspace: %v, %v", files, err)
+			}
+		})
+	}
 }
 
 func buildEmittedC(t *testing.T, source string) string {

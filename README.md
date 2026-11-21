@@ -1,7 +1,7 @@
 # GoRs
 
 [![CI](https://github.com/gors-lang/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gors-lang/Gors/actions/workflows/ci.yml)
-[![Prerelease v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.3)
+[![Prerelease v1.0.0-alpha.4](https://img.shields.io/badge/release-v1.0.0--alpha.4-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.4)
 
 GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. The bootstrap compiler, written in GoRs, can now compile its own sources through C23 and reproduce the same generated C in the next stage.
 
@@ -13,10 +13,10 @@ Download and extract the archive for your platform. To compile programs with the
 
 | Platform | Download | Run from the extracted directory |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/gors-1.0.0-alpha.4-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/gors-1.0.0-alpha.4-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
+The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.4/SHA256SUMS)
 
 ## What the language looks like
 
@@ -110,6 +110,18 @@ gcc -std=c23 -O2 wc.c -o wc
 ```
 
 `wc` prints the number of newlines, the byte count, and the path. `emit -o` replaces the destination after successful compilation and writing. With no `-o`, it writes the generated C to stdout.
+
+Starting with alpha.4, the bootstrap drives GCC directly:
+
+```sh
+./gors-bootstrap build examples/fib.gors -o fib
+./gors-bootstrap run examples/echo.gors -- "hello world" --verbose
+./gors-bootstrap run examples/wc.gors -- README.md
+```
+
+On Windows, use `.exe` for the compiler and output executable names. `build`
+replaces the output after GCC succeeds. `run` uses a temporary workspace,
+passes arguments after `--` unchanged, and returns the program's exit status.
 
 ## Build the main compiler from source
 

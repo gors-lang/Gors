@@ -1,6 +1,6 @@
 # GoRs v0.1 language reference
 
-This reference describes the experimental v0.1 language used by the **1.0.0-alpha.3** CLI. The main compiler is written in Go. Its C23 and Go backends share the same type and ownership checks.
+This reference describes the experimental v0.1 language used by the **1.0.0-alpha.4** CLI. The main compiler is written in Go. Its C23 and Go backends share the same type and ownership checks.
 
 [Русская версия](language-v0.1.ru.md)
 

@@ -1,6 +1,7 @@
 import sema "../sema/checker.gors"
 import imports "../parser/imports.gors"
 import runtime "runtime.gors"
+import native "native_runtime.gors"
 
 struct Output {
     lines: []string,
@@ -271,6 +272,12 @@ fn emit_call(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
     if program.word(tok.start, tok.end, [98, 121, 116, 101, 115, 95, 116, 111, 95, 115, 116, 114, 105, 110, 103]) {
         let bytes = emit_typed_expr(out, program, node.children[1], "boot_ints")?
         return Ok(out.save("boot_bytes_to_string(" + bytes + ")"))
+    }
+    if program.word(tok.start, tok.end, [110, 97, 116, 105, 118, 101, 95, 99]) { // native_c
+        let source = emit_expr(out, program, node.children[1])?
+        let output = emit_expr(out, program, node.children[2])?
+        let argv = emit_typed_expr(out, program, node.children[3], "boot_strings")?
+        return Ok(out.save("boot_native_c(" + source + ", " + output + ", " + argv + ")"))
     }
     if program.word(tok.start, tok.end, [112, 117, 115, 104]) { // push
         let slice = emit_expr(out, program, node.children[1])?
@@ -704,6 +711,8 @@ fn emit_stmt(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool,
 pub fn emit(program: &sema::Checked) -> Result<[]string, imports::ParseError> {
     let mut out = Output { lines: runtime::prelude(), serial: 0, depth: 0, return_type_token: -1 }
     for line in runtime::files() { out.line(*line + "") }
+    for line in native::lines() { out.line(*line + "") }
+    for line in runtime::native_adapter() { out.line(*line + "") }
     let structs = emit_structs(&mut out, program)?
     out.line("")
     for i, declaration in program.headers {

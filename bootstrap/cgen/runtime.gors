@@ -236,6 +236,32 @@ pub fn prelude() -> []string {
     ]
 }
 
+pub fn native_adapter() -> []string {
+    return [
+        "static char *boot_cstr(boot_str value) {",
+        "    if (value.len < 0 || (uint64_t)value.len >= SIZE_MAX ||",
+        "        memchr(value.data, 0, (size_t)value.len)) return NULL;",
+        "    char *text = boot_alloc(value.len + 1, 1);",
+        "    memcpy(text, value.data, (size_t)value.len);",
+        "    text[value.len] = 0;",
+        "    return text;",
+        "}",
+        "[[maybe_unused]] static int64_t boot_native_c(boot_str source, boot_str output, boot_strings args) {",
+        "    char *name = boot_cstr(output);",
+        "    char **argv = args.len ? boot_alloc(args.len, sizeof(*argv)) : NULL;",
+        "    if (!name) goto invalid;",
+        "    for (int64_t i = 0; i < args.len; ++i) {",
+        "        argv[i] = boot_cstr(args.data[i]);",
+        "        if (!argv[i]) goto invalid;",
+        "    }",
+        "    return native_c(source.data, (size_t)source.len, name, argv, (size_t)args.len);",
+        "invalid:",
+        "    fputs(\"gors-bootstrap: native path or argument contains a null byte\\n\", stderr);",
+        "    return 2;",
+        "}",
+    ]
+}
+
 pub fn files() -> []string {
     return [
         "[[maybe_unused]] static boot_result boot_file_failure(void) {",

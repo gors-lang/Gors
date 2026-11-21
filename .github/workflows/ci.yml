@@ -72,6 +72,8 @@ jobs:
           fi
           gcc --version
       - run: go run ./tools/package
+      - name: Test the packaged compiler without Go
+        run: bash tools/check-linux-archive.sh dist/gors-*-linux-amd64.tar.gz
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: gors-archives

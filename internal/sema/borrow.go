@@ -816,7 +816,7 @@ func (b *borrowChecker) checkCall(c *ast.Call) {
 	}
 	if id, ok := c.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string":
+		case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
 			for _, a := range c.Args {
 				b.checkExpr(a, false)
 				b.borrowRead(a)

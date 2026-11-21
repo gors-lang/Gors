@@ -8,7 +8,7 @@ on:
       tag:
         description: Existing version tag to build and publish
         required: true
-        default: v1.0.0-alpha.3
+        default: v1.0.0-alpha.4
         type: string
 
 permissions:
@@ -60,6 +60,8 @@ jobs:
           go run ./tools/package -out dist
           cd dist
           sha256sum -c SHA256SUMS
+      - name: Test the packaged compiler without Go
+        run: bash tools/check-linux-archive.sh dist/gors-*-linux-amd64.tar.gz
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: gors-${{ env.RELEASE_TAG }}

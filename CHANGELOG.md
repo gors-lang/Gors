@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.0-alpha.4
+
+- The self-hosted bootstrap CLI supports `build <file> -o <executable>` and
+  `run <file> [-- arguments...]`. It invokes GCC, forwards arguments as
+  separate values, and propagates the program's exit status.
+- CI builds the compiler from the Linux archive with a GCC-only PATH and
+  checks self-hosting, compilation, argument forwarding, and file error status.
+
 ## 1.0.0-alpha.3
 
 - Release archives include a verified, self-generated `gors-bootstrap.c` and
