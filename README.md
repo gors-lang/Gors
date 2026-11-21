@@ -1,21 +1,42 @@
-# GoRs 1.0.0-alpha.2
+# GoRs
 
-Язык, который берёт **простоту Go** и **строгость владения из Rust**.
-Компилятор написан на Go. Два бэкенда:
+[![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
+[![Предварительный релиз v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
 
-| Бэкенд | Что делает | Когда |
-|---|---|---|
-| `c` | генерирует C23, собирает `gcc -std=c23 -O2` | скорость и предсказуемость C/Rust |
-| `go` | генерирует Go, собирает `go build` | если C-компилятора нет |
+GoRs — компилируемый язык с простым синтаксисом и статической проверкой
+владения и заимствований. Основной компилятор генерирует C23 или Go.
+Компилятор на самом GoRs уже собирает небольшие утилиты через C23.
 
+[Скачать](#быстрый-старт) · [Спецификация языка](docs/language-v0.1.md) · [Примеры](examples/) · [История изменений](CHANGELOG.md)
+
+## Быстрый старт
+
+Скачайте и распакуйте архив для вашей системы. Для запуска через C-бэкенд нужен
+компилятор C23 в `PATH`, например GCC 14+.
+
+| Платформа | Скачать | Запустить из распакованного архива |
+| --- | --- | --- |
+| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+
+Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/SHA256SUMS)
+
+```rust
+fn main() {
+    let message = "hello from GoRs"
+    println(message)
+}
 ```
-$ gors run examples/structs.gors
-25
-4
-5
-```
 
-[Спецификация v0.1](docs/language-v0.1.md) · [Изменения](CHANGELOG.md)
+## Состояние проекта
+
+| Компонент | Что уже работает |
+| --- | --- |
+| Основной компилятор (Go) | Бэкенды C23 и Go, файловые модули, структуры и методы, проверка владения и заимствований |
+| [Bootstrap-компилятор](#генератор-c-на-gors) (GoRs) | Генерация C23 для подмножества языка, включая строки, слайсы, `Result`, `match` и файловый ввод-вывод. Собирает `fib`, `echo` и `wc` |
+
+Следующая веха работы над самосборкой — перенести поддержку структур, методов
+и файловых модулей в bootstrap-компилятор.
 
 ## Модули и match
 
@@ -36,16 +57,19 @@ fn main() {
 `pub` экспортирует функцию, структуру или метод. `match` проверяет полноту
 вариантов `Option` и `Result`. Запуск примера: `gors run examples/modules/main.gors`.
 
-## Установка
+## Сборка основного компилятора из исходников
 
 ```bash
 go build -o gors.exe ./cmd/gors
 ```
 
-- для `--backend c` нужен `gcc` 14+ или `clang` 18+ в `PATH` (нужен C23);
-- для `--backend go` нужен Go 1.22+.
+| Бэкенд | Результат | Инструменты для сборки программ |
+| --- | --- | --- |
+| `c` | C23 | GCC 14+ или Clang 18+ в `PATH` |
+| `go` | Go | Go 1.22+ |
 
-Бэкенд выбирается автоматически: если найден C-компилятор — `c`, иначе `go`.
+При наличии C-компилятора CLI по умолчанию выбирает `c`. В остальных случаях
+он выбирает `go`.
 
 ## Команды
 
