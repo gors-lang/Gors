@@ -62,7 +62,8 @@ func build(out string) error {
 			mode int64
 		}{{binary, data, 0755}, {"gors-bootstrap.c", []byte(bootstrap), 0644}}
 		for _, name := range []string{
-			"README.md", "CHANGELOG.md", "docs/language-v0.1.md",
+			"README.md", "README.ru.md", "CHANGELOG.md",
+			"docs/language-v0.1.md", "docs/language-v0.1.ru.md",
 			"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
 			"examples/wc.gors",
 		} {

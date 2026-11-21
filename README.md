@@ -1,501 +1,66 @@
 # GoRs
 
 [![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
-[![Предварительный релиз v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
+[![Prerelease v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
 
-GoRs — компилируемый язык с простым синтаксисом и статической проверкой
-владения и заимствований. Основной компилятор генерирует C23 или Go.
-Компилятор на самом GoRs уже собирает небольшие утилиты через C23.
+GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. A second compiler, written in GoRs itself, already emits C23 for small programs such as a binary-safe file counter. Self-hosting is the project's next major milestone.
 
-[Скачать](#быстрый-старт) · [Спецификация языка](docs/language-v0.1.md) · [Примеры](examples/) · [История изменений](CHANGELOG.md)
+[Quick start](#quick-start) · [Language reference](docs/language-v0.1.md) · [Examples](examples/) · [Changelog](CHANGELOG.md) · [Русский](README.ru.md)
 
-## Быстрый старт
+## Quick start
 
-Скачайте и распакуйте архив для вашей системы. Для запуска через C-бэкенд нужен
-компилятор C23 в `PATH`, например GCC 14+.
+Download and extract the archive for your platform. To compile programs with the C backend, put a C23 compiler such as GCC 14+ on your PATH.
 
-| Платформа | Скачать | Запустить из распакованного архива |
+| Platform | Download | Run from the extracted directory |
 | --- | --- | --- |
 | Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
 | Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/SHA256SUMS)
+The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/SHA256SUMS)
+
+## What the language looks like
+
+This function borrows a point to compute the square of its distance from the origin. The caller can still use the point after the call.
 
 ```rust
-fn main() {
-    let message = "hello from GoRs"
-    println(message)
-}
-```
-
-## Состояние проекта
-
-| Компонент | Что уже работает |
-| --- | --- |
-| Основной компилятор (Go) | Бэкенды C23 и Go, файловые модули, структуры и методы, проверка владения и заимствований |
-| [Bootstrap-компилятор](#генератор-c-на-gors) (GoRs) | Генерация C23 для подмножества языка, включая строки, слайсы, `Result`, `match` и файловый ввод-вывод. Собирает `fib`, `echo` и `wc` |
-
-Следующая веха работы над самосборкой — перенести поддержку структур, методов
-и файловых модулей в bootstrap-компилятор.
-
-## Модули и match
-
-```go
-import math "modules/math.gors"
-fn main() {
-    let p = math::origin()
-    println(p.norm2())
-    let msg = match Some("hello") {
-        Some(message) => message,
-        None => "empty",
-    }
-    println(msg)
-}
-```
-
-Один файл — один модуль; импорт разрешается относительно импортирующего файла.
-`pub` экспортирует функцию, структуру или метод. `match` проверяет полноту
-вариантов `Option` и `Result`. Запуск примера: `gors run examples/modules/main.gors`.
-
-## Сборка основного компилятора из исходников
-
-```bash
-go build -o gors.exe ./cmd/gors
-```
-
-| Бэкенд | Результат | Инструменты для сборки программ |
-| --- | --- | --- |
-| `c` | C23 | GCC 14+ или Clang 18+ в `PATH` |
-| `go` | Go | Go 1.22+ |
-
-При наличии C-компилятора CLI по умолчанию выбирает `c`. В остальных случаях
-он выбирает `go`.
-
-## Команды
-
-```bash
-gors run   file.gors                      # скомпилировать и выполнить
-gors build file.gors -o app               # собрать нативный бинарь
-gors emit  file.gors --backend c          # показать сгенерированный C
-gors run   file.gors --backend go         # принудительно Go-бэкенд
-gors build file.gors --opt=-O3            # свой уровень оптимизации
-```
-
-Утилита может принимать аргументы через `fn main(args: []string)`.
-В `gors run` всё после `--` передаётся программе, включая аргументы,
-которые начинаются с дефиса.
-
-```sh
-gors run examples/echo.gors -- "hello world" --verbose
-# hello world --verbose
-```
-
-Пример `wc.gors` читает файл через `read_bytes(path)`, считает переводы строк
-и байты, а при ошибке пишет через `eprintln` и возвращает ненулевой код из `main`.
-
-```sh
-gors run examples/wc.gors -- README.md
-```
-
-### Лексер на GoRs
-
-```sh
-gors run bootstrap/lexer/main.gors --backend c -- examples/hello.gors
-```
-
-Утилита `gors-lex` печатает по записи на токен в формате
-`строка столбец тип начало конец`. Строки и столбцы считаются с единицы,
-столбцы измеряются в символах Unicode. Начало и конец задают полуоткрытый
-байтовый диапазон исходного файла и считаются с нуля. В диапазоне хранятся
-исходные кавычки, escape-последовательности и разделители цифр.
-`ILLEGAL` даёт код завершения 1, ошибка вызова или чтения файла — 2.
-Для идентификаторов и чисел используются таблицы Unicode 17.0.
-
-Интеграционный тест сравнивает типы и позиции токенов с Go-лексером и
-проверяет диапазоны на примерах, исходниках самого лексера и ошибочных входах.
-
-Модуль `bootstrap/lexer/lexer.gors` предоставляет `scan(bytes)`.
-Результат `Lexed` владеет исходными байтами и массивом `Token`. Модуль
-`bootstrap/parser/imports.gors` берёт `&Lexed` и разбирает начальные
-объявления `import`, оставляя индекс первого токена следующего объявления.
-
-```sh
-gors run bootstrap/parser/main.gors --backend c -- examples/modules/main.gors
-```
-
-Утилита выводит строку и столбец `import`, затем байтовые диапазоны
-псевдонима и пути. Диапазон пути охватывает содержимое кавычек. Разбор
-заканчивается на первом другом объявлении.
-
-Модуль `bootstrap/parser/declarations.gors` разбирает структуры и сигнатуры
-функций и методов. Он сохраняет диапазоны имён и типов, учитывает `pub`
-и находит границы тел функций по фигурным скобкам.
-
-```sh
-gors run bootstrap/parser/headers.gors --backend c -- examples/modules/math.gors
-```
-
-В каждой строке вывода указаны позиция объявления, его вид, флаг `pub`,
-байтовый диапазон имени и число полей или параметров.
-
-Модуль `bootstrap/parser/bodies.gors` строит синтаксическое дерево для тел
-функций и методов. Он разбирает выражения с приоритетами, вызовы, доступ к полям,
-индексы и срезы, литералы, `?`, объявления и присваивания, `if let`, `match`,
-циклы и `return`. Содержимое литералов доступно через диапазоны токенов в
-`Lexed`. Проверку типов и владения выполняет основной компилятор.
-
-```sh
-gors run bootstrap/parser/tree.gors --backend c -- examples/hello.gors
-```
-
-Строка узла содержит его индекс, вид, полуоткрытый диапазон токенов и индексы
-дочерних узлов. `-1` означает отсутствующий необязательный узел.
-Строки `root` перечисляют корни тел по порядку объявлений.
-
-### Проверка типов на GoRs
-
-```sh
-gors run bootstrap/sema/main.gors --backend c -- examples/fib.gors
-```
-
-Экспериментальный анализатор проверяет однофайловые программы с обычными
-функциями, скалярными типами, слайсами и `Result`. Он разрешает локальные имена и вызовы
-функций, сверяет аргументы и результаты, проверяет типы операторов, условий
-и индексов, области видимости и изменяемость переменных.
-
-При успехе команда завершается с кодом 0. Ошибку она печатает в stderr
-с номером строки и столбца и возвращает код 1. Структуры, методы, импорты,
-`Option` и ссылки пока вне проверяемого подмножества. Проверка
-переносов владения и времён жизни остаётся в основном компиляторе.
-
-### Генератор C на GoRs
-
-Команда `emit` связывает лексер, парсер, проверку типов и генератор C23,
-написанные на GoRs. Она поддерживает `int`, `bool`, `string`, локальные
-переменные, функции и рекурсию, `if`, `while`, `break` и `continue`.
-Строки можно печатать, сравнивать, соединять и нарезать по байтам.
-`fn main(args: []string)` получает аргументы процесса. Слайсы `[]int`,
-`[]bool` и `[]string` поддерживают литералы, `len`, индексацию и обход
-через `for`. Для `let mut` доступны присваивание по индексу и
-`push(&mut xs, value)`. Срезы `[]int` и `[]bool` создают независимую копию.
-
-Bootstrap также поддерживает `Result<T, E>` для этих типов, конструкторы
-`Ok` и `Err` с известным типом результата и исчерпывающий `match` в
-инструкциях и выражениях. Вложенные `Result`, `Option` и оператор `?`
-пока вне этого подмножества. `read_bytes(path)` возвращает
-`Result<[]int, string>` и читает файл целиком в двоичном режиме.
-
-```sh
-gors build bootstrap/cgen/main.gors --backend c -o gors-bootstrap
-./gors-bootstrap emit examples/fib.gors -o fib.c
-gcc -std=c23 -O2 fib.c -o fib
-./fib
-```
-
-Той же командой `emit` можно собрать `examples/wc.gors` и передать
-готовой утилите путь к файлу. Успех возвращает код `0`, ошибка чтения
-возвращает `1`, неверное число аргументов возвращает `2`.
-
-`emit -o` сохраняет C через `write_text`, заменяя файл после успешной
-генерации и записи. Без `-o` C выводится в stdout. Ошибка компиляции оставляет
-файл назначения нетронутым. Сам генератор можно собрать заранее и использовать
-вместе с GCC без Go в `PATH`.
-
-Память динамических строк и буферов слайсов сгенерированной программы
-освобождается при завершении процесса. У строки есть явная байтовая длина,
-включая встроенные нулевые байты. На Windows аргументы поступают в кодировке
-C-рантайма.
-
-## Синтаксис
-
-```go
 struct Point {
     x: int,
     y: int,
 }
 
-fn (p: &Point) dist2() -> int {
+fn (p: &Point) norm2() -> int {
     return p.x * p.x + p.y * p.y
 }
 
-fn (p: &mut Point) shift(dx: int, dy: int) {
-    p.x = p.x + dx
-    p.y = p.y + dy
-}
-
 fn main() {
-    let mut p = Point { x: 3, y: 4 }
-    println(p.dist2())     // 25
-    p.shift(1, 1)
-    println(p.x)           // 4
+    let p = Point { x: 3, y: 4 }
+    println(p.norm2()) // 25
+    println(p.x)       // 3
 }
 ```
 
-Есть: `fn`, `let` / `let mut`, `if` / `else`, `while`, `for`, `break`, `continue`, `return`, `struct`,
-методы (`fn (p: &Point) dist2()`), `Option<T>`, `Result<T, E>`, `if let`,
-оператор `?`, слайсы `[]T` с литералами, срезами `[low:high]`, `len`, `push`, проверка границ,
-арифметика и сравнения, `&T` / `&mut T`, `println` / `print`.
+Bindings are immutable unless declared with `let mut`. Strings, slices, and structures move when passed by value. Read through `&T` or borrow exclusively through `&mut T`. The compiler checks moves and conflicting borrows before generating code. [Ownership rules](docs/language-v0.1.md#ownership-and-references)
 
-Метод объявляется с получателем перед именем. Получатель `&T` — общий займ,
-`&mut T` — исключительный, `T` — перемещение значения:
+| Example | What it shows |
+| --- | --- |
+| [Methods](examples/methods.gors) | Shared and mutable receivers |
+| [Modules](examples/modules/main.gors) | File imports and public declarations |
+| [Result](examples/result.gors) | Error handling and early return with `?` |
+| [Slices](examples/slices.gors) | Typed arrays of elements, indexing, and mutation |
+| [File counter](examples/wc.gors) | Command-line arguments, binary I/O, and exhaustive `match` |
 
-```go
-fn (p: &mut Point) shift(dx: int) { p.x = p.x + dx }
-p.shift(1)          // обычный вызов
-```
+## Two compilers
 
-### Option и Result
+| Compiler | Current scope |
+| --- | --- |
+| `gors`, written in Go | C23 and Go backends, file modules, structs and methods, `Option`, `Result`, and ownership checks |
+| `gors-bootstrap`, written in GoRs | A lexer, parser, type checker, and C23 emitter for single-file programs. It supports integers, booleans, strings, slices, functions, loops, `Result`, `match`, and file I/O |
 
-```go
-fn find(x: int) -> Option<int> {
-    if x > 0 { return Some(x * 2) }
-    return None
-}
+The bootstrap compiler can build `fib.gors`, `echo.gors`, and `wc.gors` with GCC. Compiling the bootstrap compiler's own GoRs sources still requires the main compiler. Adding structs, methods, and file modules to the bootstrap compiler is the next milestone. [Bootstrap sources](bootstrap/)
 
-fn parse(s: string) -> Result<int, string> {
-    if s == "" { return Err("empty") }
-    return Ok(1)
-}
+## Build and run the bootstrap compiler
 
-fn twice(s: string) -> Result<int, string> {
-    let v = parse(s)?      // вернёт Err наверх, иначе развернёт Ok
-    return Ok(v * 2)
-}
-
-fn main() {
-    let a = find(5)
-    if let Some(v) = a {
-        println(v)
-    } else {
-        println("none")
-    }
-
-    let r = twice("x")
-    if let Ok(v) = r { println(v) }
-}
-```
-
-`None` требует контекста типа (`let x: Option<int> = None` или `return None`
-из функции, возвращающей `Option<T>`) — вывода типов из «ничего» нет.
-`?` работает только в функции, возвращающей `Result` с тем же типом ошибки.
-
-Оба типа мономорфизируются: `Option<int>` и `Option<string>` — две разные
-структуры в сгенерированном коде (`Option_int64`, `Option_str`).
-
-### Слайсы
-
-```go
-fn sum(xs: []int) -> int {
-    let mut i = 0
-    let mut total = 0
-    while i < len(xs) {
-        total = total + xs[i]
-        i = i + 1
-    }
-    return total
-}
-
-fn main() {
-    let xs = [1, 2, 3, 4]
-    println(len(xs))        // 4
-    println(sum(xs))        // 10
-
-    let mut ys = [10, 20]
-    push(&mut ys, 30)       // требует &mut: иначе ошибка компиляции
-    ys[0] = 99
-    println(ys[0])          // 99
-
-    let empty: []int = []   // пустой литерал требует аннотации
-}
-```
-
-`push` принимает только `&mut []T` — borrow checker не даст изменить слайс,
-пока на него есть другой займ. Индексация проверяется на границах: в C
-генерируется `gors_bounds` с сообщением и `exit(1)`, в Go — штатная паника.
-
-Слайсы, как и Option/Result, мономорфизируются: `[]int` → `Slice_int64`
-(структура `data/len/cap` + своя `push`-функция), `[]Point` → `Slice_Point`.
-Типы: `int` (int64), `float` (float64), `bool`, `string`, структуры, ссылки, `[]T`.
-
-Срез `xs[low:high]` создаёт независимую копию. Для слайсов пока поддерживаются
-только элементы `int`, `float`, `bool`; некопируемые элементы отвергаются с `E183`.
-Строковые срезы используют байтовые индексы. Границы проверяются в обоих бэкендах.
-
-## Скорость
-
-Замеры на этой машине (Windows, gcc 15.2 `-O2`, Go 1.27), один и тот же `.gors`:
-
-| Тест | C-бэкенд | Go-бэкенд |
-|---|---|---|
-| `fib(38)`, рекурсия | **0.13 s** | 0.23 s |
-| цикл 100M итераций | **0.16 s** | 0.22 s |
-| размер бинаря | **59 KB** | 2.5 MB |
-| время сборки | **0.40 s** | 0.82 s |
-
-C-бэкенд не тянет рантайм: нет GC, нет горутин, нет стека-чекера на каждом вызове.
-Получается ровно тот машинный код, который выдал бы `gcc` для эквивалентной C-программы.
-
-Из C23 используются: `bool`/`true`/`false` как ключевые слова (без `<stdbool.h>`),
-пустые скобки в прототипах как «нет параметров» и атрибут `[[maybe_unused]]`,
-чтобы `-Wall -Wextra` на сгенерированном коде был чистым.
-`--opt=-O3 -march=native` доступны, но на рекурсии разницы с `-O2` не дали.
-
-## Что гарантирует компилятор
-
-Go и C сами по себе не проверяют ни одну из этих вещей — их ловит фронтенд GoRs
-**до** генерации кода, одинаково для обоих бэкендов.
-
-| Правило | Пример | Ошибка |
-|---|---|---|
-| Значение перемещается, а не копируется | `let s = "a"; take(s); println(s)` | `E200` |
-| Использование перемещённого | `take(p); p.x` | `E200` |
-| Нельзя менять, пока взята ссылка | `let r = &x; x = 2` | `E206` |
-| Нельзя `&mut`, пока есть любой займ | `let a = &x; let b = &mut x` | `E204` |
-| Нельзя два `&mut` одновременно | `let a = &mut x; let b = &mut x` | `E204` |
-| Нельзя читать под `&mut` | `let r = &mut x; println(x)` | `E202` |
-| Иммутабельно по умолчанию | `let x = 1; x = 2` | `E207` |
-| `&mut` только от `let mut` | `let x = 1; &mut x` | `E124` |
-| Метод — только вызов | `println(p.get)` | `E143` |
-| Получатель — структура | `fn (n: int) bad()` | `E140` |
-| `None` без типа | `let x = None` | `E150` |
-| `?` вне функции с `Result` | `let v = f()?` в `fn main()` | `E161` |
-| `?` с чужим типом ошибки | `Result<int,string>` в `Result<int,int>` | `E162` |
-| `?` не на `Result` | `Option<int>?` | `E160` |
-| `if let` не на том типе | `if let Some(v) = 1` | `E151` |
-| Пустой литерал без типа | `let xs = []` | `E153` |
-| Разные типы в литерале | `[1, "two"]` | `E154` |
-| `push` без `&mut` | `push(xs, 2)` | `E156` |
-| `push` не того типа | `push(&mut xs, "two")` | `E157` |
-
-Займы в вызовах методов работают как в Rust: `p.get()` (получатель `&T`) требует
-отсутствия `&mut`, а `p.bump()` (получатель `&mut T`) — отсутствия любых займов.
-
-Займ живёт **до последнего использования ссылки** (NLL-подобно), а не до конца блока:
-
-```go
-let mut x = 1
-let r = &x
-println(r)   // последнее использование r
-x = 2        // ok: займ уже закончился
-```
-
-Копируются `int`, `float`, `bool` и общие ссылки. Копировать `&mut` запрещено. `string` и структуры — перемещаются.
-Возврат ссылок поддерживается с выводом времени жизни из входного ссылочного
-параметра (у методов — из получателя). Ссылки нельзя хранить в агрегатах;
-явные аннотации времён жизни пока не поддерживаются.
-Ограничения и консервативные правила циклов описаны в спецификации v0.1.
-
-## Чего пока нет
-
-- нет замыканий и пользовательских generics;
-- нет времён жизни: ссылка не может пережить владельца в структуре;
-- проверка потока управления консервативна: `if` / `while` объединяют состояния ветвей,
-  поэтому иногда запрещают корректный код.
-
-### Память на C-бэкенде
-
-Управление памятью автоматическое, без сборщика мусора. GoRs владеет
-значениями по правилам move, поэтому в каждый момент у значения ровно один
-владелец, и освобождение не требует счётчиков ссылок:
-
-- строка (`string`) и слайс (`[]T`) — владеющие значения;
-- структура, `Option<T>` и `Result<T, E>` владеют, если владеет их содержимое;
-- владелец освобождается в конце области видимости и на **каждом** пути
-  выхода из функции (`return` и ранний возврат через `?`);
-- при перемещении владение переходит, старый владелец ничего не освобождает;
-- при присваивании старое значение освобождается перед записью нового.
-
-```c
-// сгенерированный C: 2000 итераций со строками, слайсами и структурами
-User u = makeUser(gors_str_new("nsvl"));
-gors_str l = User_label(&(u));
-...
-gors_str_drop(l);      // конец итерации
-User_drop(&u);         // name + tags + каждая строка в tags
-```
-
-Проверить утечки можно встроенным счётчиком:
-
-```bash
-GORS_LEAKCHECK=1 ./app
-# gors: N leaked allocation(s)   — печатается только если N > 0
-```
-
-Временные владеющие значения, в том числе в `println(f())`, `len(f())`,
-сравнениях и условиях циклов, освобождаются после вычисления выражения.
-При частичном переносе поля перемещённое место обнуляется, а остальные поля
-освобождаются владельцем. Проверка владения пока консервативна: после переноса
-поля или элемента слайса исходное значение целиком считается перемещённым.
-Перенос владеющего поля через заимствованную структуру запрещён (`E208`).
-
-Прочее:
-
-- `int` — это `int64_t`, `float` — `double`;
-- сравнение строк — `strcmp`, а не указателей.
-
-## Как устроено
-
-```
-cmd/gors          CLI: run / build / emit, выбор бэкенда
-internal/token    токены
-internal/lexer    сканер (позиции, комментарии, строки)
-internal/ast      синтаксическое дерево
-internal/parser   рекурсивный спуск
-internal/sema     типы + borrow checker (NLL-lite)
-internal/codegen  AST → Go
-internal/cgen     AST → C23
-internal/compiler связка пайплайна и выбор бэкенда
-```
-
-Пайплайн: `source → tokens → AST → типы → владение → C / Go → gcc / go build`.
-
-Проверки владения выполняются один раз на уровне AST, поэтому оба бэкенда
-получают уже гарантированно корректную программу.
-
-## Тесты
-
-```bash
-go test ./...
-```
-
-`internal/compiler/compiler_test.go` гоняет каждый кейс через **оба** бэкенда:
-успешные программы должны собраться, а каждая ошибка владения — пойматься.
-
-### Диагностика
-
-CLI показывает исходную строку, подчёркивает место ошибки и для ошибок
-владения указывает предыдущий перенос или начало конфликтующего займа:
-
-```text
-example.gors:5:10: error[E200]: use of moved value "text"
- 5 |  println(text)
-   |          ^^^^
-note: value moved here (example.gors:4:7)
- 4 |  take(text)
-   |       ^^^^
-help: Borrow the value with & instead of transferring ownership, or create a new value.
-```
-
-`internal/compiler/execution_test.go` собирает и запускает программы через C
-и Go, проверяя ожидаемый вывод и код завершения. Для этих проверок нужны Go
-и GCC с поддержкой C23. Успешные C-программы запускаются с `GORS_LEAKCHECK=1`:
-любой вывод счётчика утечек приводит к ошибке теста. Покрыты временные значения,
-частичные перемещения, замена значений, циклы, короткое замыкание, `Option`,
-`Result`, ранний выход через `?`, проверка границ и примеры из `examples`.
-Выход за границы в обоих бэкендах завершает процесс с кодом 1 и сообщением
-`gors: index N out of bounds (len M)` в stderr.
-
-### Архивы 1.0.0-alpha.2
-
-```sh
-go run ./tools/package -out dist
-```
-
-Создаются архивы для Linux amd64 и Windows amd64 с бинарником `gors`,
-автономным `gors-bootstrap.c`, примерами и документацией. Контрольные суммы
-записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.2`.
-
-Из распакованного архива bootstrap-компилятор можно собрать с GCC:
+The release archives include standalone `gors-bootstrap.c`. In an extracted archive on Linux, the following commands build it and compile the file counter. On Windows, use `.exe` for the executable names.
 
 ```sh
 gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
@@ -503,3 +68,29 @@ gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
 gcc -std=c23 -O2 wc.c -o wc
 ./wc README.md
 ```
+
+`wc` prints the number of newlines, the byte count, and the path. `emit -o` replaces the destination after successful compilation and writing. With no `-o`, it writes the generated C to stdout.
+
+## Build the main compiler from source
+
+```sh
+go build -o gors ./cmd/gors
+./gors --version
+./gors run examples/modules/main.gors --backend c
+./gors run examples/echo.gors --backend go -- "hello world" --verbose
+./gors emit examples/fib.gors --backend c
+```
+
+Building from source and compiling with the Go backend require Go 1.22+. The C backend requires a C23 compiler. The CLI defaults to C if it finds a C compiler and falls back to Go otherwise. Use `gors build <file> -o <binary>` to keep an executable and `--` to pass arguments to a program run with `gors run`.
+
+## Development and feedback
+
+```sh
+go test ./...
+go vet ./...
+go run ./tools/package -out dist
+```
+
+Tests build and run programs through both backends. They check output, exit codes, ownership diagnostics, and the bootstrap's generated C. The full test suite requires Go and GCC with C23 support.
+
+If you try a release and find a bug or a confusing diagnostic, share a small `.gors` reproducer with your OS, backend, and `gors --version`. [Open an issue](https://github.com/rxzsu/Gors/issues/new)
