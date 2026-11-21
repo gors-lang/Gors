@@ -1,7 +1,7 @@
 # GoRs
 
-[![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
-[![Prerelease v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.3)
+[![CI](https://github.com/gors-lang/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gors-lang/Gors/actions/workflows/ci.yml)
+[![Prerelease v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.3)
 
 GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. The bootstrap compiler, written in GoRs, can now compile its own sources through C23 and reproduce the same generated C in the next stage.
 
@@ -13,10 +13,10 @@ Download and extract the archive for your platform. To compile programs with the
 
 | Platform | Download | Run from the extracted directory |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
+The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
 
 ## What the language looks like
 
@@ -135,7 +135,7 @@ Tests build and run programs through both backends. They check output, exit code
 
 Packaging also requires a C23 compiler. It compares C emitted by consecutive bootstrap stages before writing either archive. Use `-cc` to select the compiler executable.
 
-If you try a release and find a bug or a confusing diagnostic, share a small `.gors` reproducer with your OS, backend, and `gors --version`. [Open an issue](https://github.com/rxzsu/Gors/issues/new)
+If you try a release and find a bug or a confusing diagnostic, share a small `.gors` reproducer with your OS, backend, and `gors --version`. [Open an issue](https://github.com/gors-lang/Gors/issues/new)
 
 ## License
 

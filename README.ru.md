@@ -2,8 +2,8 @@
 
 [English](README.md)
 
-[![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
-[![Предварительный релиз v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.3)
+[![CI](https://github.com/gors-lang/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gors-lang/Gors/actions/workflows/ci.yml)
+[![Предварительный релиз v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/gors-lang/Gors/releases/tag/v1.0.0-alpha.3)
 
 GoRs — компилируемый язык с простым синтаксисом и статической проверкой
 владения и заимствований. Основной компилятор генерирует C23 или Go.
@@ -19,10 +19,10 @@ GoRs — компилируемый язык с простым синтакси�
 
 | Платформа | Скачать | Запустить из распакованного архива |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
+Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/gors-lang/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
 
 ```rust
 fn main() {
