@@ -41,10 +41,27 @@ fn main() {
 
 Bindings are immutable unless declared with `let mut`. Strings, slices, and structures move when passed by value. Read through `&T` or borrow exclusively through `&mut T`. The compiler checks moves and conflicting borrows before generating code. [Ownership rules](docs/language-v0.1.md#ownership-and-references)
 
+`Result` makes failure part of the return type. Here `?` forwards a read error, while `match` handles both outcomes at the call site.
+
+```rust
+fn file_size(path: string) -> Result<int, string> {
+    let bytes = read_bytes(path)?
+    return Ok(len(bytes))
+}
+
+fn main() {
+    match file_size("README.md") {
+        Ok(size) => println(size, "bytes"),
+        Err(message) => eprintln(message),
+    }
+}
+```
+
 | Example | What it shows |
 | --- | --- |
 | [Methods](examples/methods.gors) | Shared and mutable receivers |
 | [Modules](examples/modules/main.gors) | File imports and public declarations |
+| [Option](examples/option.gors) | Values that can be present (`Some`) or absent (`None`) |
 | [Result](examples/result.gors) | Error handling and early return with `?` |
 | [Slices](examples/slices.gors) | Typed arrays of elements, indexing, and mutation |
 | [File counter](examples/wc.gors) | Command-line arguments, binary I/O, and exhaustive `match` |
@@ -94,3 +111,7 @@ go run ./tools/package -out dist
 Tests build and run programs through both backends. They check output, exit codes, ownership diagnostics, and the bootstrap's generated C. The full test suite requires Go and GCC with C23 support.
 
 If you try a release and find a bug or a confusing diagnostic, share a small `.gors` reproducer with your OS, backend, and `gors --version`. [Open an issue](https://github.com/rxzsu/Gors/issues/new)
+
+## License
+
+GoRs is available under the [MIT License](LICENSE).

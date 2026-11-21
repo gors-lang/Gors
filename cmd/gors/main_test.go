@@ -18,6 +18,12 @@ func TestCommandDiagnostics(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.source), 0600); err != nil {
 				t.Fatal(err)
 			}
+			// The compiler prints the canonical path. Windows CI can supply a
+			// short (8.3) path to TempDir.
+			canonicalPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, command := range []struct {
 				name string
 				run  func() int
@@ -45,7 +51,7 @@ func TestCommandDiagnostics(t *testing.T) {
 					if code != 1 {
 						t.Fatalf("exit %d, want 1", code)
 					}
-					for _, want := range []string{path + ":", tc.want, " | ", "^"} {
+					for _, want := range []string{canonicalPath + ":", tc.want, " | ", "^"} {
 						if !strings.Contains(string(out), want) {
 							t.Fatalf("missing %q:\n%s", want, out)
 						}
