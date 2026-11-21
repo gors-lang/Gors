@@ -29,12 +29,12 @@ jobs:
       - name: Validate version tag
         shell: bash
         run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]'
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version: '1.27.3'
           cache: false
@@ -56,7 +56,7 @@ jobs:
           go run ./tools/package -out dist
           cd dist
           sha256sum -c SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: gors-${{ env.RELEASE_TAG }}
           path: dist/*
