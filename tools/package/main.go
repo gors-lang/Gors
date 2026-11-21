@@ -42,7 +42,8 @@ func build(out, cc string) error {
 		return err
 	}
 	docsAndSources := []string{
-		"README.md", "README.ru.md", "CHANGELOG.md", "LICENSE",
+		"README.md", "README.ru.md", "CONTRIBUTING.md", "CHANGELOG.md", "LICENSE",
+		"docs/README.md", "docs/getting-started.md", "docs/compiler.md",
 		"docs/language-v0.1.md", "docs/language-v0.1.ru.md",
 		"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
 		"examples/wc.gors", "examples/point.gors", "examples/methods.gors", "examples/structs.gors",

@@ -5,7 +5,7 @@
 
 GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. The bootstrap compiler, written in GoRs, can now compile its own sources through C23 and reproduce the same generated C in the next stage.
 
-[Quick start](#quick-start) · [Language reference](docs/language-v0.1.md) · [Examples](examples/) · [Changelog](CHANGELOG.md) · [Русский](README.ru.md)
+[Quick start](#quick-start) · [Documentation](docs/README.md) · [Examples](examples/) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Русский](README.ru.md)
 
 ## Quick start
 
@@ -136,6 +136,10 @@ go build -o gors ./cmd/gors
 Building from source and compiling with the Go backend require Go 1.22+. The C backend requires a C23 compiler. The CLI defaults to C if it finds a C compiler and falls back to Go otherwise. Use `gors build <file> -o <binary>` to keep an executable and `--` to pass arguments to a program run with `gors run`.
 
 ## Development and feedback
+
+See [Contributing](CONTRIBUTING.md) for local setup, focused tests, and pull
+requests. The [compiler guide](docs/compiler.md) maps the main and bootstrap
+compiler pipelines.
 
 ```sh
 go test ./...
