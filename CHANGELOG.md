@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `write_text(path, text)` записывает файлы в обоих основных бэкендах и
+  в bootstrap. `gors-bootstrap emit <file> -o <output.c>` сохраняет C напрямую.
+
+- Bootstrap-анализатор и генератор C поддерживают `Result<T, E>`,
+  `Ok` и `Err` и проверяют полноту `match`.
+- `read_bytes` читает файл в двоичном режиме. `wc.gors` собирается
+  bootstrap-компилятором и проверяется на пустых, двоичных и отсутствующих файлах.
+
 ## 1.0.0-alpha.1
 
 - Bootstrap-компилятор поддерживает `[]int`, `[]bool` и `[]string`,

@@ -8,9 +8,25 @@ fn compile(bytes: []int) -> Result<[]string, imports::ParseError> {
     return cgen::emit(&program)
 }
 
-fn emit_file(bytes: []int) -> int {
+fn join_lines(lines: &[]string, first: int, end: int) -> string {
+    if first == end { return "" }
+    if end - first == 1 { return (*lines)[first] + "\n" }
+    let middle = first + (end - first) / 2
+    return join_lines(lines, first, middle) + join_lines(lines, middle, end)
+}
+
+fn write_output(path: &string, lines: &[]string) -> int {
+    let text = join_lines(lines, 0, len(*lines))
+    match write_text(*path, text) {
+        Ok(_) => { return 0 }
+        Err(issue) => { eprintln("gors-bootstrap:", *path, issue); return 2 }
+    }
+}
+
+fn emit_file(bytes: []int, output: &string) -> int {
     match compile(bytes) {
         Ok(lines) => {
+            if *output != "" { return write_output(output, &lines) }
             for line in lines { println(*line) }
             return 0
         }
@@ -21,18 +37,21 @@ fn emit_file(bytes: []int) -> int {
     }
 }
 
+fn compile_file(path: &string, output: &string) -> int {
+    match read_bytes(*path) {
+        Ok(bytes) => { return emit_file(bytes, output) }
+        Err(issue) => { eprintln("gors-bootstrap:", *path, issue); return 2 }
+    }
+}
+
 fn main(args: []string) -> int {
-    if len(args) != 2 {
-        eprintln("usage: gors-bootstrap emit <file>")
-        return 2
+    if len(args) == 2 && args[0] == "emit" {
+        let output = ""
+        return compile_file(&args[1], &output)
     }
-    if args[0] != "emit" {
-        eprintln("usage: gors-bootstrap emit <file>")
-        return 2
+    if len(args) == 4 && args[0] == "emit" && args[2] == "-o" && args[3] != "" {
+        return compile_file(&args[1], &args[3])
     }
-    let path = args[1]
-    match read_bytes(path) {
-        Ok(bytes) => { return emit_file(bytes) }
-        Err(issue) => { eprintln("gors-bootstrap:", path, issue); return 2 }
-    }
+    eprintln("usage: gors-bootstrap emit <file> [-o <output.c>]")
+    return 2
 }

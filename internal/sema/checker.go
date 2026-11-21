@@ -1127,6 +1127,18 @@ func (c *checker) checkCall(ex *ast.Call) Type {
 				return nil
 			}
 			return &ResultT{Ok: &Slice{Elem: Int}, Err: String}
+		case "write_text":
+			if len(ex.Args) != 2 {
+				c.errf("E185", ex.At, "write_text takes exactly two arguments: path and text")
+				return nil
+			}
+			for _, arg := range ex.Args {
+				t := c.checkExpr(arg)
+				if t != nil && !isString(t) {
+					c.errf("E185", arg.Pos(), "write_text requires string arguments, got %s", t.String())
+				}
+			}
+			return &ResultT{Ok: Bool, Err: String}
 		case "push":
 			if len(ex.Args) != 2 {
 				c.errf("E155", ex.At, "push takes exactly two arguments: push(&mut xs, value)")
@@ -1238,7 +1250,7 @@ func (c *checker) resolveMethod(field *ast.Field) (*FuncSig, *StructT) {
 
 func isBuiltin(name string) bool {
 	switch name {
-	case "println", "print", "eprintln", "len", "read_bytes":
+	case "println", "print", "eprintln", "len", "read_bytes", "write_text":
 		return true
 	}
 	return false

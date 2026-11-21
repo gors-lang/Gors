@@ -59,6 +59,19 @@ func TestBootstrapCEmitter(t *testing.T) {
 				println(flags[0], len(words))
 				for word in words { println(word) }
 			}`), "true 3\na\nB\nc\n", "", 0, nil},
+		{"Result constructors and expression match", write("result", `
+			fn value(ok: bool) -> Result<[]int, string> {
+				if ok { let items: []int = []; return Ok(items) }
+				return Err("bad")
+			}
+			fn count(result: Result<[]int, string>) -> int {
+				return match result {
+					Err(message) => len(message),
+					Ok(items) => { let n = len(items); n + 1 },
+				}
+			}
+			fn main() { println(count(value(true)), count(value(false))) }
+		`), "1 3\n", "", 0, nil},
 		{"call order", write("call order", `
 			fn trace(n: int) -> int { println(n); return n }
 			fn flag(n: int) -> bool { println(n); return true }
@@ -106,6 +119,22 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"immutable push", write("immutable push", "fn main() { let xs = [1]; push(&mut xs, 2) }"), "assignment to immutable name"},
 		{"push type", write("push type", "fn main() { let mut xs = [1]; push(&mut xs, true) }"), "push element type mismatch"},
 		{"index assignment type", write("index assignment type", "fn main() { let mut xs = [1]; xs[0] = true }"), "assignment type mismatch"},
+		{"constructor without context", write("constructor without context", "fn main() { let x = Ok(1) }"), "Result constructor needs a Result type context"},
+		{"wrong Result payload", write("wrong Result payload", `fn main() { let x: Result<int, string> = Err(false) }`), "Result payload type mismatch"},
+		{"nonexhaustive match", write("nonexhaustive match", `fn main() { let x: Result<int, string> = Ok(1); match x { Ok(i) => println(i) } }`), "match must cover both Ok and Err"},
+		{"duplicate match arm", write("duplicate match arm", `fn main() { let x: Result<int, string> = Ok(1); match x { Ok(i) => println(i), Ok(j) => println(j) } }`), "duplicate Result match arm"},
+		{"mismatched arms", write("mismatched arms", `fn main() { let x: Result<int, string> = Ok(1); let y = match x { Ok(i) => i, Err(e) => e } }`), "match arms have different types"},
+		{"invalid read path type", write("invalid read path type", `fn main() { let x = read_bytes(1) }`), "read_bytes expects a string path"},
+	}
+	wc := filepath.Join("..", "..", "examples", "wc.gors")
+	empty, binary, missing := filepath.Join(dir, "empty.txt"), filepath.Join(dir, "binary input.bin"), filepath.Join(dir, "missing.txt")
+	if err := os.WriteFile(empty, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Cross more than one fread buffer and cover null, CRLF and non-UTF-8.
+	contents := bytes.Repeat([]byte{0, 13, 10, 255, 10}, 1000)
+	if err := os.WriteFile(binary, contents, 0600); err != nil {
+		t.Fatal(err)
 	}
 	for _, backend := range []compiler.Backend{compiler.BackendC, compiler.BackendGo} {
 		t.Run(string(backend), func(t *testing.T) {
@@ -141,6 +170,38 @@ func TestBootstrapCEmitter(t *testing.T) {
 					t.Fatalf("got stdout %q stderr %q", out, stderr)
 				}
 			})
+			t.Run("wc file scenarios", func(t *testing.T) {
+				source, diagnostics := runBootstrapCommand(t, emitter, 0, "emit", wc)
+				if diagnostics != "" {
+					t.Fatalf("emit diagnostics: %s", diagnostics)
+				}
+				exe := buildEmittedC(t, source)
+				reference := buildBootstrapTool(t, wc, compiler.BackendC)
+				for _, tc := range []struct {
+					name, path, stdout, stderr string
+					status                     int
+				}{
+					{"empty", empty, "0 0 " + empty + "\n", "", 0},
+					{"binary", binary, "2000 5000 " + binary + "\n", "", 0},
+					{"missing", missing, "", "wc: " + missing + " could not read file\n", 1},
+					{"usage", "", "", "usage: wc <file>\n", 2},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						var args []string
+						if tc.path != "" {
+							args = []string{tc.path}
+						}
+						stdout, stderr := runBootstrapCommand(t, exe, tc.status, args...)
+						if stdout != tc.stdout || stderr != tc.stderr {
+							t.Fatalf("got stdout %q stderr %q, want stdout %q stderr %q", stdout, stderr, tc.stdout, tc.stderr)
+						}
+						wantOut, wantErr := runBootstrapCommand(t, reference, tc.status, args...)
+						if stdout != wantOut || stderr != wantErr {
+							t.Fatalf("existing C backend gave stdout %q stderr %q", wantOut, wantErr)
+						}
+					})
+				}
+			})
 			for _, tc := range bad {
 				t.Run(tc.name, func(t *testing.T) {
 					out, diagnostics := runBootstrapCommand(t, emitter, 1, "emit", tc.path)
@@ -169,6 +230,110 @@ func buildEmittedC(t *testing.T, source string) string {
 		t.Fatalf("gcc: %v\n%s\n%s", err, out, source)
 	}
 	return bin
+}
+
+func TestBootstrapFileOutput(t *testing.T) {
+	entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
+	for _, backend := range []compiler.Backend{compiler.BackendC, compiler.BackendGo} {
+		t.Run(string(backend), func(t *testing.T) {
+			dir := t.TempDir()
+			generator := buildBootstrapTool(t, entry, backend)
+			input := filepath.Join("..", "..", "examples", "fib.gors")
+			output := filepath.Join(dir, "fib output.c")
+			if err := os.WriteFile(output, []byte("old contents"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			want, diagnostics := runBootstrapCommand(t, generator, 0, "emit", input)
+			if diagnostics != "" {
+				t.Fatalf("emit: %s", diagnostics)
+			}
+			stdout, stderr := runBootstrapCommand(t, generator, 0, "emit", input, "-o", output)
+			if stdout != "" || stderr != "" {
+				t.Fatalf("got stdout %q stderr %q", stdout, stderr)
+			}
+			source, err := os.ReadFile(output)
+			if err != nil || string(source) != want {
+				t.Fatalf("C file differs from stdout: %v", err)
+			}
+			got, diagnostics := runBootstrapCommand(t, buildEmittedC(t, string(source)), 0)
+			if got != "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n" || diagnostics != "" {
+				t.Fatalf("generated fib gave stdout %q stderr %q", got, diagnostics)
+			}
+
+			bad := filepath.Join(dir, "bad.gors")
+			if err := os.WriteFile(bad, []byte("fn main() { let x: int = false }"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr = runBootstrapCommand(t, generator, 1, "emit", bad, "-o", output)
+			if stdout != "" || !strings.Contains(stderr, "initializer type mismatch") {
+				t.Fatalf("got stdout %q stderr %q", stdout, stderr)
+			}
+			if data, err := os.ReadFile(output); err != nil || !bytes.Equal(data, source) {
+				t.Fatalf("compilation failure changed the output file: %v", err)
+			}
+
+			destination := filepath.Join(dir, "destination")
+			if err := os.Mkdir(destination, 0700); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr = runBootstrapCommand(t, generator, 2, "emit", input, "-o", destination)
+			if stdout != "" || !strings.Contains(stderr, "could not write file") {
+				t.Fatalf("got stdout %q stderr %q", stdout, stderr)
+			}
+			if info, err := os.Stat(destination); err != nil || !info.IsDir() {
+				t.Fatalf("could not preserve destination directory: %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 3 {
+				t.Fatalf("unexpected files after write: %v", entries)
+			}
+		})
+	}
+}
+
+func TestWriteText(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "writer.gors")
+	if err := os.WriteFile(source, []byte(`
+		fn main(args: []string) -> int {
+			let path = args[0]
+			let text = "line\nsecond"
+			match write_text(path, text) {
+				Ok(ok) => { println(ok, len(text)); return 0 }
+				Err(issue) => { eprintln(issue); return 1 }
+			}
+		}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, backend := range []compiler.Backend{compiler.BackendC, compiler.BackendGo} {
+		t.Run(string(backend), func(t *testing.T) {
+			primary := buildBootstrapTool(t, source, backend)
+			entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
+			generator := buildBootstrapTool(t, entry, backend)
+			code, diagnostics := runBootstrapCommand(t, generator, 0, "emit", source)
+			if diagnostics != "" {
+				t.Fatalf("emit: %s", diagnostics)
+			}
+			bootstrap := buildEmittedC(t, code)
+			for _, program := range []string{primary, bootstrap} {
+				target := filepath.Join(t.TempDir(), "written text.txt")
+				got, stderr := runBootstrapCommand(t, program, 0, target)
+				if got != "true 11\n" || stderr != "" {
+					t.Fatalf("got stdout %q stderr %q", got, stderr)
+				}
+				if data, err := os.ReadFile(target); err != nil || string(data) != "line\nsecond" {
+					t.Fatalf("write: %q, %v", data, err)
+				}
+				got, stderr = runBootstrapCommand(t, program, 1, filepath.Join(target, "bad"))
+				if got != "" || stderr != "could not write file\n" {
+					t.Fatalf("got stdout %q stderr %q", got, stderr)
+				}
+			}
+		})
+	}
 }
 
 func runBootstrapCommand(t *testing.T, bin string, wantExit int, args ...string) (string, string) {

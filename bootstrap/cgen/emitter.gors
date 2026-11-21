@@ -115,16 +115,47 @@ fn quoted(program: &sema::Checked, first: int) -> string {
     return result + "\")"
 }
 
+fn base_type(typ: int) -> string {
+    if typ == 0 { return "void" }
+    if typ == 1 { return "int64_t" }
+    if typ == 3 { return "bool" }
+    if typ == 4 { return "boot_str" }
+    if typ == 11 { return "boot_ints" }
+    if typ == 13 { return "boot_bools" }
+    if typ == 14 { return "boot_strings" }
+    return ""
+}
+
+fn type_name(program: &sema::Checked, typ: int, token: int) -> Result<string, imports::ParseError> {
+    if typ >= 1000 {
+        if len(base_type(sema::result_variant_type(typ, 1))) != 0 &&
+            len(base_type(sema::result_variant_type(typ, 2))) != 0 {
+            return Ok("boot_result_" + decimal(typ))
+        }
+    } else {
+        let name = base_type(typ)
+        if len(name) != 0 { return Ok(name + "") }
+    }
+    return Err(program.issue(token, "type is outside the C emitter subset"))
+}
+
 fn ctype(program: &sema::Checked, token: int) -> Result<string, imports::ParseError> {
     let typ = program.type_at(token)?
-    if typ == 0 { return Ok("void") }
-    if typ == 1 { return Ok("int64_t") }
-    if typ == 3 { return Ok("bool") }
-    if typ == 4 { return Ok("boot_str") }
-    if typ == 11 { return Ok("boot_ints") }
-    if typ == 13 { return Ok("boot_bools") }
-    if typ == 14 { return Ok("boot_strings") }
-    return Err(program.issue(token, "C emitter supports int, bool, string and their slices"))
+    return type_name(program, typ, token)
+}
+
+fn emit_result_types(out: &mut Output) {
+    let payload_types = [1, 3, 4, 11, 13, 14]
+    for success in payload_types {
+        let val = base_type(success)
+        for failure in payload_types {
+            let err = base_type(failure)
+            let name = "boot_result_" + decimal(sema::result_type(success, failure))
+            out.line("typedef struct { bool ok; " + val + " val; " + err + " err; } " + name + ";")
+        }
+    }
+    out.line("typedef boot_result_" + decimal(sema::file_result_type()) + " boot_file_result;")
+    out.line("typedef boot_result_" + decimal(sema::write_result_type()) + " boot_write_result;")
 }
 
 fn signature(program: &sema::Checked, index: int) -> Result<string, imports::ParseError> {
@@ -154,6 +185,24 @@ fn emit_call(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
     let node = &program.tree.nodes[id]
     let callee = &program.tree.nodes[node.children[0]]
     let tok = &program.input.tokens[callee.first]
+    let variant = program.variant(node.children[0])
+    if variant != 0 {
+        let typ = program.expr_types[id]
+        let name = type_name(program, typ, callee.first)?
+        let payload = type_name(program, sema::result_variant_type(typ, variant), callee.first)?
+        let data = emit_typed_expr(out, program, node.children[1], payload)?
+        if variant == 1 { return Ok(out.save("(" + name + "){ .ok = true, .val = " + data + " }")) }
+        return Ok(out.save("(" + name + "){ .err = " + data + " }"))
+    }
+    if program.word(tok.start, tok.end, [114, 101, 97, 100, 95, 98, 121, 116, 101, 115]) { // read_bytes
+        let path = emit_expr(out, program, node.children[1])?
+        return Ok(out.save("boot_read_bytes(" + path + ")"))
+    }
+    if program.word(tok.start, tok.end, [119, 114, 105, 116, 101, 95, 116, 101, 120, 116]) { // write_text
+        let path_value = emit_expr(out, program, node.children[1])?
+        let text_value = emit_expr(out, program, node.children[2])?
+        return Ok(out.save("boot_write_text(" + path_value + ", " + text_value + ")"))
+    }
     if program.word(tok.start, tok.end, [112, 117, 115, 104]) { // push
         let borrow = &program.tree.nodes[node.children[1]]
         let target = &program.tree.nodes[borrow.children[0]]
@@ -245,6 +294,7 @@ fn emit_expr(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
     }
     if node.kind == "group" { return emit_expr(out, program, node.children[0]) }
     if node.kind == "call" { return emit_call(out, program, id) }
+    if node.kind == "match_expression" { return emit_match(out, program, id) }
     if node.kind == "slice_literal" { return emit_slice_literal(out, program, id) }
     if node.kind == "index" || node.kind == "slice" {
         return emit_subscript(out, program, id)
@@ -352,9 +402,67 @@ fn emit_assignment(out: &mut Output, program: &sema::Checked, id: int) -> Result
     return Ok(true)
 }
 
+fn emit_match_arm(out: &mut Output, program: &sema::Checked, id: int, subject: string, target: string, typ: string) -> Result<bool, imports::ParseError> {
+    let arm = &program.tree.nodes[id]
+    let pat = &program.tree.nodes[arm.children[0]]
+    let mut field = ".err"
+    if program.variant(pat.children[0]) == 1 { field = ".val" }
+    emit_loop_binding(out, program, pat.children[1], subject + field)
+    let body_id = arm.children[1]
+    let body = &program.tree.nodes[body_id]
+    if len(target) == 0 {
+        if body.kind == "block" { return emit_contents(out, program, body_id) }
+        let ignored = emit_expr(out, program, body_id)?
+        if len(ignored) != 0 { out.line("(void)(" + ignored + ");") }
+        return Ok(true)
+    }
+    let mut value_id = body_id
+    if body.kind == "block" {
+        let mut i = 0
+        while i + 1 < len(body.children) {
+            let emitted = emit_stmt(out, program, body.children[i])?
+            i = i + 1
+        }
+        value_id = program.tree.nodes[body.children[i]].children[0]
+    }
+    let value = emit_typed_expr(out, program, value_id, typ)?
+    out.line(target + " = " + value + ";")
+    return Ok(true)
+}
+
+fn emit_match(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let value = emit_expr(out, program, node.children[0])?
+    let subject = out.save(value)
+    let mut target = ""
+    let mut typ = ""
+    if node.kind == "match_expression" {
+        target = out.temp()
+        typ = type_name(program, program.expr_types[id], node.first)?
+        out.line(typ + " " + target + ";")
+    }
+    let first = &program.tree.nodes[node.children[1]]
+    let pat = &program.tree.nodes[first.children[0]]
+    if program.variant(pat.children[0]) == 1 { out.line("if (" + subject + ".ok) {") }
+    else { out.line("if (!" + subject + ".ok) {") }
+    out.depth = out.depth + 1
+    let emitted_first = emit_match_arm(out, program, node.children[1], subject + "", target + "", typ + "")?
+    out.depth = out.depth - 1
+    out.line("} else {")
+    out.depth = out.depth + 1
+    let emitted_second = emit_match_arm(out, program, node.children[2], subject, target + "", typ)?
+    out.depth = out.depth - 1
+    out.line("}")
+    return Ok(target)
+}
+
 fn emit_stmt(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
     let node = &program.tree.nodes[id]
     if node.kind == "assign" { return emit_assignment(out, program, id) }
+    if node.kind == "match_statement" {
+        let emitted = emit_match(out, program, id)?
+        return Ok(true)
+    }
     if node.kind == "let" || node.kind == "let_mut" {
         let name = &program.tree.nodes[node.children[0]]
         let tok = &program.input.tokens[name.first]
@@ -421,6 +529,8 @@ fn emit_stmt(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool,
 
 pub fn emit(program: &sema::Checked) -> Result<[]string, imports::ParseError> {
     let mut out = Output { lines: runtime::prelude(), serial: 0, depth: 0, return_type_token: -1 }
+    emit_result_types(&mut out)
+    for line in runtime::files() { out.line(*line + "") }
     out.line("")
     for i, _ in program.headers {
         let prototype = signature(program, i)?

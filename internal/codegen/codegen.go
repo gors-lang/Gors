@@ -22,6 +22,13 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
 	g.line("package main")
 	g.line("")
 	g.line("import (\"fmt\"; \"os\")")
+	mono := sema.MonoTypes(info)
+	for _, t := range mono {
+		if sema.MonoName(t) == "Result_bool_str" {
+			g.line("import \"path/filepath\"")
+			break
+		}
+	}
 	g.line("")
 
 	// Match the C backend's checked-index diagnostic and exit status.
@@ -56,7 +63,7 @@ func __gors_string_slice(s string, low, high int64) string {
 	for _, sd := range prog.Structs {
 		g.genStruct(sd)
 	}
-	for _, t := range sema.MonoTypes(info) {
+	for _, t := range mono {
 		g.genMono(t)
 		if sema.MonoName(t) == "Result_Slice_int64_str" {
 			g.out.WriteString(`func __gors_read_bytes(path string) Result_Slice_int64_str {
@@ -69,6 +76,27 @@ func __gors_string_slice(s string, low, high int64) string {
         values[i] = int64(b)
     }
     return Result_Slice_int64_str{ok: true, val: values}
+}
+
+`)
+		}
+		if sema.MonoName(t) == "Result_bool_str" {
+			g.out.WriteString(`func __gors_write_text(path, text string) Result_bool_str {
+    failure := Result_bool_str{err: "could not write file"}
+    if path == "" {
+        return failure
+    }
+    file, err := os.CreateTemp(filepath.Dir(path), ".gors-tmp-*")
+    if err != nil {
+        return failure
+    }
+    _, writeErr := file.WriteString(text)
+    closeErr := file.Close()
+    if writeErr != nil || closeErr != nil || os.Rename(file.Name(), path) != nil {
+        os.Remove(file.Name())
+        return failure
+    }
+    return Result_bool_str{ok: true, val: true}
 }
 
 `)
@@ -746,6 +774,8 @@ func (g *gen) call(ex *ast.Call) string {
 			return "fmt.Fprintln(os.Stderr, " + args + ")"
 		case "read_bytes":
 			return "__gors_read_bytes(" + g.expr(ex.Args[0]) + ")"
+		case "write_text":
+			return "__gors_write_text(" + g.expr(ex.Args[0]) + ", " + g.expr(ex.Args[1]) + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {

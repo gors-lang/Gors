@@ -208,7 +208,9 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
     return (Result_Slice_int64_str){ .ok = true, .val = bytes };
 }
 `)
-			break
+		}
+		if sema.MonoName(t) == "Result_bool_str" {
+			g.out.WriteString(fileWriteRuntime)
 		}
 	}
 	g.out.WriteString("\n")
@@ -1542,6 +1544,10 @@ func (g *gen) call(ex *ast.Call) string {
 			return g.printCall(ex.Args, true, true)
 		case "read_bytes":
 			return "gors_read_bytes(" + g.strOperand(ex.Args[0]) + ")"
+		case "write_text":
+			path := g.strOperand(ex.Args[0])
+			data := g.strOperand(ex.Args[1])
+			return "gors_write_text(" + path + ", " + data + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {
