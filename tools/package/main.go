@@ -64,6 +64,7 @@ func build(out string) error {
 		for _, name := range []string{
 			"README.md", "CHANGELOG.md", "docs/language-v0.1.md",
 			"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
+			"examples/wc.gors",
 		} {
 			data, err := os.ReadFile(name)
 			if err != nil {

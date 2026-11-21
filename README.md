@@ -1,4 +1,4 @@
-# GoRs 1.0.0-alpha.1
+# GoRs 1.0.0-alpha.2
 
 Язык, который берёт **простоту Go** и **строгость владения из Rust**.
 Компилятор написан на Go. Два бэкенда:
@@ -461,7 +461,7 @@ help: Borrow the value with & instead of transferring ownership, or create a new
 Выход за границы в обоих бэкендах завершает процесс с кодом 1 и сообщением
 `gors: index N out of bounds (len M)` в stderr.
 
-### Архивы 1.0.0-alpha.1
+### Архивы 1.0.0-alpha.2
 
 ```sh
 go run ./tools/package -out dist
@@ -469,13 +469,13 @@ go run ./tools/package -out dist
 
 Создаются архивы для Linux amd64 и Windows amd64 с бинарником `gors`,
 автономным `gors-bootstrap.c`, примерами и документацией. Контрольные суммы
-записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.1`.
+записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.2`.
 
 Из распакованного архива bootstrap-компилятор можно собрать с GCC:
 
 ```sh
 gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
-./gors-bootstrap emit examples/slices.gors > slices.c
-gcc -std=c23 -O2 slices.c -o slices
-./slices
+./gors-bootstrap emit examples/wc.gors -o wc.c
+gcc -std=c23 -O2 wc.c -o wc
+./wc README.md
 ```
