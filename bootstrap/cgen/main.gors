@@ -1,10 +1,9 @@
-import lexer "../lexer/lexer.gors"
 import sema "../sema/checker.gors"
 import imports "../parser/imports.gors"
 import cgen "emitter.gors"
 
-fn compile(bytes: []int) -> Result<[]string, imports::ParseError> {
-    let program = sema::analyze(lexer::scan(bytes))?
+fn compile(path: &string, bytes: []int) -> Result<[]string, imports::ParseError> {
+    let program = sema::analyze_file(path, bytes)?
     return cgen::emit(&program)
 }
 
@@ -23,8 +22,8 @@ fn write_output(path: &string, lines: &[]string) -> int {
     }
 }
 
-fn emit_file(bytes: []int, output: &string) -> int {
-    match compile(bytes) {
+fn emit_file(path: &string, bytes: []int, output: &string) -> int {
+    match compile(path, bytes) {
         Ok(lines) => {
             if *output != "" { return write_output(output, &lines) }
             for line in lines { println(*line) }
@@ -39,7 +38,7 @@ fn emit_file(bytes: []int, output: &string) -> int {
 
 fn compile_file(path: &string, output: &string) -> int {
     match read_bytes(*path) {
-        Ok(bytes) => { return emit_file(bytes, output) }
+        Ok(bytes) => { return emit_file(path, bytes, output) }
         Err(issue) => { eprintln("gors-bootstrap:", *path, issue); return 2 }
     }
 }

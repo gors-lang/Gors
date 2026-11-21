@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Release archives include a verified, self-generated `gors-bootstrap.c` and
+  the bootstrap GoRs sources. The packager requires identical C output from
+  two consecutive stages before writing the archives.
+
+- The bootstrap compiler can compile its own sources. The self-hosting test
+  builds the next two stages with GCC, compares their generated C byte for byte,
+  and uses the last stage to build and run the module example.
+- Bootstrap supports slices of structs, struct and slice payloads in variants,
+  shared local references, scalar and slice references, and `?`.
+- Fixed unary minus emission and removed top-level C qualifiers when copying
+  values out of shared references.
+
+- The bootstrap compiler supports relative file modules, qualified names,
+  and public functions, structs, and methods.
+- Added `Option<T>`, `Some`, `None`, and exhaustive `match` in bootstrap.
+- Added `bytes_to_string` to convert nonzero bytes to a string.
+
+- The bootstrap compiler supports methods and call-scoped references to structs.
+  Tests cover value, shared, and mutable receivers, reference arguments, and
+  diagnostics for conflicting borrows in one call.
 - The bootstrap compiler supports structs by value, including literals, nested
   fields, field reads and writes, and function arguments and returns.
 - The main C backend can iterate over a slice field of an indexed element.

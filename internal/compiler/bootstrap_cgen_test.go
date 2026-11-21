@@ -33,6 +33,61 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"fib", filepath.Join("..", "..", "examples", "fib.gors"), "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n", "", 0, nil},
 		{"hello", filepath.Join("..", "..", "examples", "hello.gors"), "hello from GoRs\n", "", 0, nil},
 		{"Point by value", filepath.Join("..", "..", "examples", "point.gors"), "25\n", "", 0, nil},
+		{"struct slices and variants", write("struct slices and variants", `
+			struct Item { value: int }
+			struct Failure { message: string }
+			fn append(items: &mut []Item, value: int) { push(items, Item { value: value }) }
+			fn list(ok: bool) -> Result<[]Item, Failure> {
+				if !ok { return Err(Failure { message: "unavailable" }) }
+				let mut items = [Item { value: 2 }]
+				append(&mut items, 3)
+				return Ok(items)
+			}
+			fn first(ok: bool) -> Result<Item, Failure> {
+				let items = list(ok)?
+				return Ok(items[0])
+			}
+			fn main() {
+				match list(true) {
+					Ok(items) => { for item in items { println(item.value) } },
+					Err(issue) => { eprintln(issue.message) },
+				}
+				match first(false) {
+					Ok(_) => { println("unexpected") },
+					Err(issue) => { eprintln(issue.message) },
+				}
+				let optional = Some(Item { value: -4 })
+				match optional {
+					Some(item) => { println(item.value) },
+					None => { println("unexpected") },
+				}
+			}`), "2\n3\n-4\n", "unavailable\n", 0, nil},
+		{"explicit reference parameters", filepath.Join("..", "..", "examples", "structs.gors"), "25\n4\n5\n", "", 0, nil},
+		{"method receivers", filepath.Join("..", "..", "examples", "methods.gors"), "25\n4\n5\n", "", 0, nil},
+		{"file modules", filepath.Join("..", "..", "examples", "modules", "main.gors"), "25\nhello\n", "", 0, nil},
+		{"Option expression and bytes", write("Option expression and bytes", `
+			fn find(ok: bool) -> Option<string> {
+				if ok { return Some(bytes_to_string([71, 111])) }
+				return None
+			}
+			fn render(value: Option<string>) -> string {
+				return match value { None => "empty", Some(text) => text }
+			}
+			fn main() { println(render(find(true)), render(find(false))) }
+		`), "Go empty\n", "", 0, nil},
+		{"method namespaces", write("method namespaces", `
+			struct A { x: int }
+			struct B { x: int }
+			struct Wrap { inner: A }
+			fn (a: &mut A) bump() { a.x = a.x + 1 }
+			fn (a: A) value() -> int { return a.x }
+			fn (b: &B) value() -> int { return b.x * 2 }
+			fn main() {
+				let mut w = Wrap { inner: A { x: 3 } }
+				w.inner.bump()
+				let b = B { x: 5 }
+				println(w.inner.value(), b.value())
+			}`), "4 10\n", "", 0, nil},
 		{"nested structs and mutable fields", write("nested structs", `
 			struct Outer { inner: Inner, values: []int }
 			struct Inner { number: int, text: string }
@@ -147,6 +202,18 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"duplicate initializer", write("duplicate initializer", `struct A { x: int } fn main() { let a = A { x: 1, x: 2 } }`), "duplicate struct field initializer"},
 		{"wrong field type", write("wrong field type", `struct A { x: int } fn main() { let a = A { x: false } }`), "struct field type mismatch"},
 		{"immutable field assignment", write("immutable field assignment", `struct A { x: int } fn main() { let a = A { x: 1 }; a.x = 2 }`), "assignment to immutable name"},
+		{"immutable receiver", write("immutable receiver", `struct A { x: int } fn (p: &mut A) set() { p.x = 2 } fn main() { let a = A { x: 1 }; a.set() }`), "assignment to immutable name"},
+		{"shared receiver write", write("shared receiver write", `struct A { x: int } fn (p: &A) set() { p.x = 2 } fn main() { }`), "assignment to immutable name"},
+		{"conflicting call borrows", write("conflicting call borrows", `struct A { x: int } fn f(p: &mut A, q: &A) {} fn main() { let mut a = A { x: 1 }; f(&mut a, &a) }`), "conflicting borrows in call"},
+		{"conflicting receiver borrow", write("conflicting receiver borrow", `struct A { x: int } fn (p: &mut A) f(q: &A) {} fn main() { let mut a = A { x: 1 }; a.f(&a) }`), "conflicting borrows in call"},
+		{"escaping reference", write("escaping reference", `struct A { x: int } fn f(p: &A) -> &A { return p } fn main() {}`), "returning references is outside"},
+		{"nonexhaustive Option", write("nonexhaustive Option", `fn main() { match Some(1) { Some(x) => println(x) } }`), "match must cover both Some and None"},
+		{"wrong try error type", write("wrong try error type", `
+			fn source() -> Result<int, string> { return Err("bad") }
+			fn wrong() -> Result<int, bool> { let x = source()?; return Ok(x) }
+			fn main() {}
+		`), "? error type differs"},
+		{"recursive struct slice", write("recursive struct slice", `struct Tree { children: []Tree } fn main() {}`), "recursive struct layout"},
 	}
 	wc := filepath.Join("..", "..", "examples", "wc.gors")
 	empty, binary, missing := filepath.Join(dir, "empty.txt"), filepath.Join(dir, "binary input.bin"), filepath.Join(dir, "missing.txt")
@@ -233,6 +300,110 @@ func TestBootstrapCEmitter(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestBootstrapFileModules(t *testing.T) {
+	entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
+	directory := t.TempDir()
+	write := func(name, input string) string {
+		t.Helper()
+		path := filepath.Join(directory, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	write("common.gors", `pub fn number() -> int { return 7 }`)
+	write("left/l.gors", `
+		import common "../common.gors"
+		pub struct Point { x: int }
+		struct Hidden { x: int }
+		fn helper() -> int { return 2 }
+		pub fn number() -> int { return helper() + common::number() }
+		fn (p: &Point) hidden() -> int { return p.x }
+		pub fn (p: &Point) value() -> int { return p.hidden() }
+	`)
+	write("right/r.gors", `import common ".././common.gors" fn helper() -> int { return 3 }
+		pub fn number() -> int { return helper() + common::number() }`)
+	success := write("main.gors", `
+		import left "left/l.gors"
+		import right "right/r.gors"
+		import other "left/../left/l.gors"
+		struct Wrap { p: left::Point }
+		fn main() {
+			let w = Wrap { p: other::Point { x: 4 } }
+			println(w.p.value(), left::number(), right::number())
+		}
+	`)
+	write("cycle/other.gors", `import root "../cycle.gors"`)
+	bad := []struct{ name, path, diagnostic string }{
+		{"private function", write("private-fn.gors", `import left "left/l.gors" fn main() { println(left::helper()) }`), "imported declaration is private"},
+		{"private type", write("private-type.gors", `import left "left/l.gors" fn main() { let x = left::Hidden { x: 1 } }`), "imported declaration is private"},
+		{"private method", write("private-method.gors", `import left "left/l.gors" fn main() { let p = left::Point { x: 1 }; println(p.hidden()) }`), "imported method is private"},
+		{"unknown alias", write("unknown.gors", `fn main() { println(foo::bar()) }`), "unknown import alias"},
+		{"cyclic import", write("cycle.gors", `import dep "cycle/other.gors" fn main() {}`), "cyclic import"},
+		{"duplicate alias", write("duplicate.gors", `import a "common.gors" import a "left/l.gors" fn main() {}`), "duplicate import alias"},
+		{"absolute import", write("absolute.gors", `import a "/common.gors" fn main() {}`), "import requires a relative file path"},
+		{"missing file", write("missing.gors", `import a "missing-module.gors" fn main() {}`), "could not read module"},
+	}
+	for _, backend := range []compiler.Backend{compiler.BackendC, compiler.BackendGo} {
+		t.Run(string(backend), func(t *testing.T) {
+			generator := buildBootstrapTool(t, entry, backend)
+			code, diagnostics := runBootstrapCommand(t, generator, 0, "emit", success)
+			if diagnostics != "" {
+				t.Fatalf("emit: %s", diagnostics)
+			}
+			out, stderr := runBootstrapCommand(t, buildEmittedC(t, code), 0)
+			want, refErr := runBootstrapCommand(t, buildBootstrapTool(t, success, compiler.BackendC), 0)
+			if out != "4 9 10\n" || out != want || stderr != "" || refErr != "" {
+				t.Fatalf("bootstrap stdout %q stderr %q, reference stdout %q stderr %q", out, stderr, want, refErr)
+			}
+			for _, tc := range bad {
+				t.Run(tc.name, func(t *testing.T) {
+					stdout, stderr := runBootstrapCommand(t, generator, 1, "emit", tc.path)
+					if stdout != "" || !strings.Contains(stderr, tc.diagnostic) || strings.Contains(stderr, "leaked allocation") {
+						t.Fatalf("got stdout %q stderr %q, expected diagnostic %q", stdout, stderr, tc.diagnostic)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestBootstrapSelfHost(t *testing.T) {
+	entry := filepath.Join("..", "..", "bootstrap", "cgen", "main.gors")
+	stage1 := buildBootstrapTool(t, entry, compiler.BackendC)
+	temp := t.TempDir()
+	stage2Source := filepath.Join(temp, "stage2.c")
+	stage3Source := filepath.Join(temp, "stage3.c")
+	emit := func(binary, input, output string) []byte {
+		t.Helper()
+		stdout, stderr := runBootstrapCommand(t, binary, 0, "emit", input, "-o", output)
+		if stdout != "" || stderr != "" {
+			t.Fatalf("emit %s: stdout %q stderr %q", input, stdout, stderr)
+		}
+		data, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	first := emit(stage1, entry, stage2Source)
+	stage2 := buildEmittedC(t, string(first))
+	second := emit(stage2, entry, stage3Source)
+	if !bytes.Equal(first, second) {
+		t.Fatalf("self-compiled compiler emitted different C: %d vs %d bytes", len(first), len(second))
+	}
+	stage3 := buildEmittedC(t, string(second))
+	example := filepath.Join("..", "..", "examples", "modules", "main.gors")
+	code := emit(stage3, example, filepath.Join(temp, "example.c"))
+	out, errOut := runBootstrapCommand(t, buildEmittedC(t, string(code)), 0)
+	if out != "25\nhello\n" || errOut != "" {
+		t.Fatalf("self-compiled compiler's program gave stdout %q stderr %q", out, errOut)
 	}
 }
 

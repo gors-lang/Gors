@@ -185,6 +185,21 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
 		}
 	}
 	for _, t := range mono {
+		if sema.MonoName(t) == "Slice_int64" {
+			g.out.WriteString(`[[maybe_unused]] static gors_str gors_bytes_to_string(Slice_int64 bytes) {
+    char* text = gors_malloc((size_t)bytes.len + 1);
+    for (int64_t i = 0; i < bytes.len; ++i) {
+        if (bytes.data[i] < 1 || bytes.data[i] > 255) {
+            fputs("gors: bytes_to_string requires bytes in 1..255\n", stderr);
+            exit(1);
+        }
+        text[i] = (char)(unsigned char)bytes.data[i];
+    }
+    text[bytes.len] = 0;
+    return text;
+}
+`)
+		}
 		if sema.MonoName(t) == "Result_Slice_int64_str" {
 			g.out.WriteString(`[[maybe_unused]] static Result_Slice_int64_str gors_read_bytes(const char* path) {
     FILE* file = fopen(path, "rb");
@@ -1548,6 +1563,8 @@ func (g *gen) call(ex *ast.Call) string {
 			path := g.strOperand(ex.Args[0])
 			data := g.strOperand(ex.Args[1])
 			return "gors_write_text(" + path + ", " + data + ")"
+		case "bytes_to_string":
+			return "gors_bytes_to_string(" + g.expr(ex.Args[0]) + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {

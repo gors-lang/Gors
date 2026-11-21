@@ -2,11 +2,12 @@ import lexer "../lexer/lexer.gors"
 import decl "../parser/declarations.gors"
 import bodies "../parser/bodies.gors"
 import imports "../parser/imports.gors"
+import modules "modules.gors"
 
 // A type code is 0 for void, 1 for int, 2 for float, 3 for bool, 4 for string.
 // Each slice layer adds 10.
-// Result uses 1000 + 32 * success type + error type.
-// Struct types use 10000 + the declaration index.
+// Struct and struct slice codes carry the declaration index.
+// Variant codes pack payload type codes into separate ranges.
 struct Local {
     start: int,
     end: int,
@@ -23,34 +24,61 @@ struct Scope {
 }
 
 pub struct Checked {
-    input: lexer::Lexed,
+    graph: modules::Graph,
     headers: []decl::Declaration,
     tree: bodies::Bodies,
     expr_types: []int,
     struct_order: []int,
 }
 
-fn is_slice(typ: int) -> bool { return typ >= 10 && typ < 32 }
+pub fn is_struct(typ: int) -> bool { return typ >= 10000 && typ < 10000000 }
+pub fn is_struct_slice(typ: int) -> bool { return typ >= 10000000 && typ < 20000000 }
+fn is_slice(typ: int) -> bool { return (typ >= 10 && typ < 32) || is_struct_slice(typ) }
+fn slice_type(elem: int) -> int {
+    if is_struct(elem) { return 10000000 + elem - 10000 }
+    return elem + 10
+}
+pub fn slice_element(typ: int) -> int {
+    if is_struct_slice(typ) { return typ - 10000000 + 10000 }
+    return typ - 10
+}
 
-fn is_result(typ: int) -> bool { return typ >= 1000 && typ < 10000 }
+pub fn is_result(typ: int) -> bool { return typ >= 100000000 }
+pub fn is_option(typ: int) -> bool { return typ > 20000000 && typ < 40000000 }
+pub fn option_type(payload: int) -> int { return 20000000 + payload }
+pub fn option_payload(typ: int) -> int { return typ - 20000000 }
+fn is_payload(typ: int) -> bool {
+    return (typ >= 1 && typ <= 4) || is_struct(typ) || is_slice(typ)
+}
+
+pub fn is_reference(typ: int) -> bool { return typ <= -100002 }
+pub fn is_mut_reference(typ: int) -> bool { return is_reference(typ) && (-typ - 100000) % 2 == 1 }
+pub fn dereference(typ: int) -> int {
+    if is_reference(typ) { return (-typ - 100000) / 2 }
+    return typ
+}
+fn reference(typ: int, mutable: bool) -> int {
+    if mutable { return -100001 - 2 * typ }
+    return -100000 - 2 * typ
+}
 
 pub fn result_type(success: int, failure: int) -> int {
-    return 1000 + 32 * success + failure
+    return 100000000 + 20000000 * success + failure
 }
 
 pub fn file_result_type() -> int { return result_type(11, 4) }
 pub fn write_result_type() -> int { return result_type(3, 4) }
 
 pub fn result_variant_type(typ: int, variant: int) -> int {
-    if variant == 1 { return (typ - 1000) / 32 }
-    return (typ - 1000) % 32
+    if variant == 1 { return (typ - 100000000) / 20000000 }
+    return (typ - 100000000) % 20000000
 }
 
 pub fn (c: &Checked) word(start: int, end: int, expected: []int) -> bool {
     if end - start != len(expected) { return false }
     let mut i = 0
     while i < len(expected) {
-        if c.input.source[start + i] != expected[i] { return false }
+        if c.graph.input.source[start + i] != expected[i] { return false }
         i = i + 1
     }
     return true
@@ -60,50 +88,79 @@ fn (c: &Checked) same_name(a: int, a_end: int, b: int, b_end: int) -> bool {
     if a_end - a != b_end - b { return false }
     let mut i = 0
     while i < a_end - a {
-        if c.input.source[a + i] != c.input.source[b + i] { return false }
+        if c.graph.input.source[a + i] != c.graph.input.source[b + i] { return false }
         i = i + 1
     }
     return true
 }
 
 pub fn (c: &Checked) issue(token: int, message: string) -> imports::ParseError {
-    return decl::error_at(&c.input, token, message)
+    if token >= 0 && token < len(c.graph.input.tokens) {
+        let file = c.graph.input.tokens[token].file
+        if file > 0 { return decl::error_at(&c.graph.input, token, c.graph.files[file].path + ": " + message) }
+    }
+    return decl::error_at(&c.graph.input, token, message)
 }
 
 pub fn (c: &Checked) type_at(start: int) -> Result<int, imports::ParseError> {
     if start < 0 { return Ok(0) }
+    if decl::at(&c.graph.input, start, "&") {
+        let mutable = decl::at(&c.graph.input, start + 1, "mut")
+        let mut next = start + 1
+        if mutable { next = next + 1 }
+        let inner = c.type_at(next)?
+        if inner <= 0 { return Err(c.issue(start, "bootstrap references require a value type")) }
+        return Ok(reference(inner, mutable))
+    }
     let mut i = start
     let mut layers = 0
-    while decl::at(&c.input, i, "[") {
+    while decl::at(&c.graph.input, i, "[") {
         layers = layers + 10
         i = i + 2
     }
     if layers > 10 { return Err(c.issue(start, "nested slices are outside the bootstrap subset")) }
-    let tok = &c.input.tokens[i]
+    let tok = &c.graph.input.tokens[i]
+    if decl::at(&c.graph.input, i + 1, "::") {
+        let qualified = c.global(i, i + 3, "struct")?
+        if layers != 0 { return Ok(slice_type(10000 + qualified)) }
+        return Ok(10000 + qualified)
+    }
     if c.word(tok.start, tok.end, [82, 101, 115, 117, 108, 116]) { // Result
-        if layers != 0 || !decl::at(&c.input, i + 1, "<") {
-            return Err(c.issue(start, "expected Result<T, E> with scalar or slice payloads"))
+        if layers != 0 || !decl::at(&c.graph.input, i + 1, "<") {
+            return Err(c.issue(start, "expected Result<T, E>"))
         }
         let success_start = i + 2
-        let comma = decl::parse_type(&c.input, success_start)?
-        let error_start = decl::expect(&c.input, comma, ",")?
-        let close = decl::parse_type(&c.input, error_start)?
-        let after = decl::expect(&c.input, close, ">")?
+        let comma = decl::parse_type(&c.graph.input, success_start)?
+        let error_start = decl::expect(&c.graph.input, comma, ",")?
+        let close = decl::parse_type(&c.graph.input, error_start)?
+        let after = decl::expect(&c.graph.input, close, ">")?
         let success = c.type_at(success_start)?
         let failure = c.type_at(error_start)?
-        if success >= 1000 || failure >= 1000 { return Err(c.issue(start, "Result payload must be a scalar or slice")) }
+        if !is_payload(success) || !is_payload(failure) {
+            return Err(c.issue(start, "Result payload must be a scalar, struct, or slice"))
+        }
         return Ok(result_type(success, failure))
     }
-    if decl::at(&c.input, i + 1, "::") || decl::at(&c.input, i + 1, "<") {
+    if c.word(tok.start, tok.end, [79, 112, 116, 105, 111, 110]) { // Option
+        if layers != 0 || !decl::at(&c.graph.input, i + 1, "<") {
+            return Err(c.issue(start, "expected Option<T>"))
+        }
+        let payload = c.type_at(i + 2)?
+        let close = decl::parse_type(&c.graph.input, i + 2)?
+        let after = decl::expect(&c.graph.input, close, ">")?
+        if !is_payload(payload) { return Err(c.issue(start, "Option payload must be a scalar, struct, or slice")) }
+        return Ok(option_type(payload))
+    }
+    if decl::at(&c.graph.input, i + 1, "::") || decl::at(&c.graph.input, i + 1, "<") {
         return Err(c.issue(start, "type is outside the bootstrap subset"))
     }
     if c.word(tok.start, tok.end, [105, 110, 116]) { return Ok(layers + 1) } // int
     if c.word(tok.start, tok.end, [102, 108, 111, 97, 116]) { return Ok(layers + 2) } // float
     if c.word(tok.start, tok.end, [98, 111, 111, 108]) { return Ok(layers + 3) } // bool
     if c.word(tok.start, tok.end, [115, 116, 114, 105, 110, 103]) { return Ok(layers + 4) } // string
-    let index = c.structure(tok.start, tok.end)
+    let index = c.global(i, i + 1, "struct")?
     if index >= 0 {
-        if layers != 0 { return Err(c.issue(start, "slices of structs are outside the bootstrap subset")) }
+        if layers != 0 { return Ok(slice_type(10000 + index)) }
         return Ok(10000 + index)
     }
     return Err(c.issue(start, "type is outside the bootstrap subset"))
@@ -133,28 +190,50 @@ fn (c: &Checked) define(scope: &mut Scope, start: int, end: int, typ: int, mutab
 
 fn (c: &Checked) define_node(scope: &mut Scope, id: int, typ: int, mutable: bool) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
-    let tok = &c.input.tokens[node.first]
+    let tok = &c.graph.input.tokens[node.first]
     return c.define(scope, tok.start, tok.end, typ, mutable, node.first)
 }
 
-pub fn (c: &Checked) function(start: int, end: int) -> int {
-    for i, header in c.headers {
-        if header.kind == "fn" && c.same_name(start, end, header.name.start, header.name.end) { return i }
+fn (c: &Checked) import_target(token: int) -> Result<int, imports::ParseError> {
+    let alias = &c.graph.input.tokens[token]
+    for imported in c.graph.imports {
+        if imported.file == alias.file && c.same_name(alias.start, alias.end, imported.start, imported.end) {
+            return Ok(imported.target)
+        }
     }
-    return -1
+    return Err(c.issue(token, "unknown import alias"))
 }
 
-fn (c: &Checked) structure(start: int, end: int) -> int {
+fn (c: &Checked) global(first: int, next: int, kind: string) -> Result<int, imports::ParseError> {
+    let origin = c.graph.input.tokens[first].file
+    let mut target = origin
+    if next - first == 3 { target = c.import_target(first)? }
+    let name = &c.graph.input.tokens[next - 1]
     for i, header in c.headers {
-        if header.kind == "struct" && c.same_name(start, end, header.name.start, header.name.end) { return i }
+        if header.kind == kind && !header.method && c.graph.input.tokens[header.name_token].file == target &&
+            c.same_name(name.start, name.end, header.name.start, header.name.end) {
+            if target != origin && !header.public { return Err(c.issue(first, "imported declaration is private")) }
+            return Ok(i)
+        }
     }
-    return -1
+    if next - first == 3 { return Err(c.issue(first, "imported declaration was not found")) }
+    return Ok(-1)
+}
+
+pub fn (c: &Checked) function(first: int, next: int) -> Result<int, imports::ParseError> {
+    return c.global(first, next, "fn")
+}
+
+pub fn (c: &Checked) is_entry(index: int) -> bool {
+    let header = &c.headers[index]
+    return header.kind == "fn" && !header.method && c.graph.input.tokens[header.name_token].file == 0 &&
+        c.word(header.name.start, header.name.end, [109, 97, 105, 110])
 }
 
 fn (c: &Checked) field(typ: int, id: int) -> Result<int, imports::ParseError> {
     let tok_id = c.tree.nodes[id].first
-    if typ < 10000 { return Err(c.issue(tok_id, "field access requires a struct")) }
-    let tok = &c.input.tokens[tok_id]
+    if !is_struct(typ) { return Err(c.issue(tok_id, "field access requires a struct")) }
+    let tok = &c.graph.input.tokens[tok_id]
     for i, field in c.headers[typ - 10000].bindings {
         if c.same_name(tok.start, tok.end, field.name.start, field.name.end) { return Ok(i) }
     }
@@ -162,16 +241,34 @@ fn (c: &Checked) field(typ: int, id: int) -> Result<int, imports::ParseError> {
 }
 
 fn (c: &Checked) field_type(typ: int, id: int) -> Result<int, imports::ParseError> {
-    let index = c.field(typ, id)?
-    return c.type_at(c.headers[typ - 10000].bindings[index].type_token)
+    let base = dereference(typ)
+    let index = c.field(base, id)?
+    return c.type_at(c.headers[base - 10000].bindings[index].type_token)
+}
+
+pub fn (c: &Checked) method(typ: int, name: int) -> Result<int, imports::ParseError> {
+    let tok_id = c.tree.nodes[name].first
+    let base = dereference(typ)
+    let tok = &c.graph.input.tokens[tok_id]
+    for i, header in c.headers {
+        if header.method && c.same_name(tok.start, tok.end, header.name.start, header.name.end) {
+            let receiver_type = c.type_at(header.receiver_type_token)?
+            if dereference(receiver_type) == base {
+                if !header.public && tok.file != c.graph.input.tokens[header.name_token].file {
+                    return Err(c.issue(tok_id, "imported method is private"))
+                }
+                return Ok(i)
+            }
+        }
+    }
+    return Err(c.issue(tok_id, "unknown method for this receiver"))
 }
 
 fn (c: &Checked) struct_literal(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let name = &c.tree.nodes[node.children[0]]
-    let tok = &c.input.tokens[name.first]
-    let index = c.structure(tok.start, tok.end)
-    if name.next != name.first + 1 || index < 0 { return Err(c.issue(name.first, "unknown struct type")) }
+    let index = c.global(name.first, name.next, "struct")?
+    if index < 0 { return Err(c.issue(name.first, "unknown struct type")) }
     let typ = 10000 + index
     let mut seen: []bool = []
     for _ in c.headers[index].bindings { push(&mut seen, false) }
@@ -197,7 +294,7 @@ fn (c: &Checked) mutable_local(scope: &Scope, id: int) -> Result<int, imports::P
     if target.kind != "name" || target.next != target.first + 1 {
         return Err(c.issue(target.first, "expected a mutable local name"))
     }
-    let tok = &c.input.tokens[target.first]
+    let tok = &c.graph.input.tokens[target.first]
     let i = c.local(scope, tok.start, tok.end)
     if i < 0 { return Err(c.issue(target.first, "unknown assignment target")) }
     if !scope.locals[i].mutable { return Err(c.issue(target.first, "assignment to immutable name")) }
@@ -207,32 +304,59 @@ fn (c: &Checked) mutable_local(scope: &Scope, id: int) -> Result<int, imports::P
 fn (c: &Checked) push_call(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     if len(node.children) != 3 { return Err(c.issue(node.first, "push expects two arguments")) }
-    let target = &c.tree.nodes[node.children[1]]
-    if target.kind != "unary:&mut" { return Err(c.issue(target.first, "push expects &mut slice")) }
-    let typ = c.mutable_local(&*scope, target.children[0])?
-    if !is_slice(typ) { return Err(c.issue(target.first, "push expects &mut slice")) }
-    let value = c.expr(scope, node.children[2], typ - 10)?
-    if value != typ - 10 { return Err(c.issue(node.first, "push element type mismatch")) }
+    let target = node.children[1]
+    let borrow = c.expr(scope, target, -1)?
+    let typ = dereference(borrow)
+    if !is_mut_reference(borrow) || !is_slice(typ) { return Err(c.issue(c.tree.nodes[target].first, "push expects &mut slice")) }
+    let elem = slice_element(typ)
+    let value = c.expr(scope, node.children[2], elem)?
+    if value != elem { return Err(c.issue(node.first, "push element type mismatch")) }
     return Ok(0)
 }
 
 pub fn (c: &Checked) variant(name: int) -> int {
-    let tok = &c.input.tokens[c.tree.nodes[name].first]
+    let tok = &c.graph.input.tokens[c.tree.nodes[name].first]
     if c.word(tok.start, tok.end, [79, 107]) { return 1 } // Ok
     if c.word(tok.start, tok.end, [69, 114, 114]) { return 2 } // Err
+    if c.word(tok.start, tok.end, [83, 111, 109, 101]) { return 3 } // Some
+    if c.word(tok.start, tok.end, [78, 111, 110, 101]) { return 4 } // None
     return 0
 }
 
 fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let callee = &c.tree.nodes[node.children[0]]
-    if callee.kind != "name" || callee.next != callee.first + 1 {
+    if callee.kind == "field" {
+        let recv = callee.children[0]
+        let actual = c.expr(scope, recv, -1)?
+        let index = c.method(actual, callee.children[1])?
+        let want = c.type_at(c.headers[index].receiver_type_token)?
+        if is_mut_reference(want) {
+            let writable = c.writable_type(scope, recv)?
+        }
+        return c.call_arguments(scope, id, index, recv, want)
+    }
+    if callee.kind != "name" {
         return Err(c.issue(callee.first, "call is outside the bootstrap subset"))
     }
-    let tok = &c.input.tokens[callee.first]
+    if callee.next != callee.first + 1 {
+        let imported = c.function(callee.first, callee.next)?
+        return c.call_arguments(scope, id, imported, -1, 0)
+    }
+    let tok = &c.graph.input.tokens[callee.first]
     let argc = len(node.children) - 1
     let variant = c.variant(node.children[0])
-    if variant != 0 {
+    if variant == 4 { return Err(c.issue(callee.first, "None is a value, not a call")) }
+    if variant == 3 {
+        if argc != 1 { return Err(c.issue(callee.first, "Some expects one argument")) }
+        let mut want = -1
+        if is_option(expected) { want = option_payload(expected) }
+        let actual = c.expr(scope, node.children[1], want)?
+        if !is_payload(actual) { return Err(c.issue(callee.first, "Option payload must be a scalar, struct, or slice")) }
+        if want >= 0 && actual != want { return Err(c.issue(callee.first, "Option payload type mismatch")) }
+        return Ok(option_type(actual))
+    }
+    if variant == 1 || variant == 2 {
         if !is_result(expected) { return Err(c.issue(callee.first, "Result constructor needs a Result type context")) }
         if argc != 1 { return Err(c.issue(callee.first, "Result constructor expects one argument")) }
         let want = result_variant_type(expected, variant)
@@ -253,6 +377,12 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         if path_type != 4 || text_type != 4 { return Err(c.issue(callee.first, "write_text expects string arguments")) }
         return Ok(write_result_type())
     }
+    if c.word(tok.start, tok.end, [98, 121, 116, 101, 115, 95, 116, 111, 95, 115, 116, 114, 105, 110, 103]) {
+        if argc != 1 { return Err(c.issue(callee.first, "bytes_to_string expects one argument")) }
+        let bytes_type = c.expr(scope, node.children[1], 11)?
+        if bytes_type != 11 { return Err(c.issue(callee.first, "bytes_to_string expects []int")) }
+        return Ok(4)
+    }
     if c.word(tok.start, tok.end, [112, 117, 115, 104]) { return c.push_call(scope, id) } // push
     if c.word(tok.start, tok.end, [108, 101, 110]) { // len
         if argc != 1 { return Err(c.issue(callee.first, "len expects one argument")) }
@@ -266,22 +396,63 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         let mut i = 1
         while i <= argc {
             let arg_type = c.expr(scope, node.children[i], -1)?
-            if arg_type < 1 || arg_type > 4 { return Err(c.issue(callee.first, "print expects scalar values")) }
+            if dereference(arg_type) < 1 || dereference(arg_type) > 4 { return Err(c.issue(callee.first, "print expects scalar values")) }
             i = i + 1
         }
         return Ok(0)
     }
-    let index = c.function(tok.start, tok.end)
+    let index = c.function(callee.first, callee.next)?
     if index < 0 { return Err(c.issue(callee.first, "unknown function")) }
-    if c.word(tok.start, tok.end, [109, 97, 105, 110]) { return Err(c.issue(callee.first, "main cannot be called")) }
+    if c.is_entry(index) { return Err(c.issue(callee.first, "main cannot be called")) }
+    return c.call_arguments(scope, id, index, -1, 0)
+}
+
+fn (c: &Checked) root(id: int) -> int {
+    let node = &c.tree.nodes[id]
+    if node.kind == "name" && node.next == node.first + 1 { return node.first }
+    if node.kind == "field" || node.kind == "index" || node.kind == "unary:*" ||
+        node.kind == "unary:&" || node.kind == "unary:&mut" || node.kind == "group" {
+        return c.root(node.children[0])
+    }
+    return -1
+}
+
+fn (c: &Checked) same_root(left: int, right: int) -> bool {
+    let a = c.root(left)
+    let b = c.root(right)
+    if a < 0 || b < 0 { return false }
+    let first = &c.graph.input.tokens[a]
+    let second = &c.graph.input.tokens[b]
+    return c.same_name(first.start, first.end, second.start, second.end)
+}
+
+fn (c: &Checked) call_arguments(scope: &mut Scope, id: int, index: int, recv: int, recv_type: int) -> Result<int, imports::ParseError> {
+    let node = &c.tree.nodes[id]
     let header = &c.headers[index]
-    if argc != len(header.bindings) { return Err(c.issue(callee.first, "wrong number of arguments")) }
+    let argc = len(node.children) - 1
+    if argc != len(header.bindings) { return Err(c.issue(node.first, "wrong number of arguments")) }
     let mut i = 0
     while i < argc {
         let want = c.type_at(header.bindings[i].type_token)?
         let child = node.children[i + 1]
         let actual = c.expr(scope, child, want)?
         if actual != want { return Err(c.issue(c.tree.nodes[child].first, "argument type mismatch")) }
+        if is_reference(actual) {
+            if recv >= 0 && is_reference(recv_type) &&
+                (is_mut_reference(actual) || is_mut_reference(recv_type)) && c.same_root(recv, child) {
+                return Err(c.issue(c.tree.nodes[child].first, "conflicting borrows in call"))
+            }
+            let mut j = 0
+            while j < i {
+                let prior = node.children[j + 1]
+                let prior_type = scope.types[prior]
+                if is_reference(prior_type) && (is_mut_reference(actual) || is_mut_reference(prior_type)) &&
+                    c.same_root(prior, child) {
+                    return Err(c.issue(c.tree.nodes[child].first, "conflicting borrows in call"))
+                }
+                j = j + 1
+            }
+        }
         i = i + 1
     }
     return c.type_at(header.return_type_token)
@@ -312,21 +483,24 @@ fn (c: &Checked) binary(scope: &mut Scope, id: int) -> Result<int, imports::Pars
 fn (c: &Checked) slice_literal(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let mut elem = -1
-    if is_slice(expected) { elem = expected - 10 }
+    if is_slice(expected) { elem = slice_element(expected) }
     for child in node.children {
         let actual = c.expr(scope, child, elem)?
         if actual == 0 { return Err(c.issue(node.first, "slice elements must have values")) }
-        if actual >= 10 { return Err(c.issue(node.first, "nested slices are outside the bootstrap subset")) }
+        if is_slice(actual) { return Err(c.issue(node.first, "nested slices are outside the bootstrap subset")) }
+        if !is_struct(actual) && (actual < 1 || actual > 4) {
+            return Err(c.issue(node.first, "slice element must be a scalar or struct"))
+        }
         if elem == -1 { elem = actual }
         if actual != elem { return Err(c.issue(c.tree.nodes[child].first, "slice element type mismatch")) }
     }
     if elem < 0 { return Err(c.issue(node.first, "empty slice needs a type")) }
-    return Ok(elem + 10)
+    return Ok(slice_type(elem))
 }
 
 fn (c: &Checked) subscript(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
-    let base = c.expr(scope, node.children[0], -1)?
+    let base = dereference(c.expr(scope, node.children[0], -1)?)
     let mut i = 1
     while i < len(node.children) {
         let child = node.children[i]
@@ -336,7 +510,7 @@ fn (c: &Checked) subscript(scope: &mut Scope, id: int) -> Result<int, imports::P
         }
         i = i + 1
     }
-    if node.kind == "index" && is_slice(base) { return Ok(base - 10) }
+    if node.kind == "index" && is_slice(base) { return Ok(slice_element(base)) }
     if node.kind == "slice" {
         if base == 4 || (base >= 11 && base <= 13) { return Ok(base) }
     }
@@ -357,12 +531,40 @@ fn (c: &Checked) raw_expr(scope: &mut Scope, id: int, expected: int) -> Result<i
     if node.kind == "STRING" { return Ok(4) }
     if node.kind == "name" {
         if node.next != node.first + 1 { return Err(c.issue(node.first, "qualified name is outside the bootstrap subset")) }
-        let tok = &c.input.tokens[node.first]
+        let tok = &c.graph.input.tokens[node.first]
+        if c.variant(id) == 4 {
+            if !is_option(expected) { return Err(c.issue(node.first, "None needs an Option type context")) }
+            return Ok(expected)
+        }
         let index = c.local(&*scope, tok.start, tok.end)
         if index < 0 { return Err(c.issue(node.first, "unknown local name")) }
         return Ok(scope.locals[index].typ)
     }
     if node.kind == "group" { return c.expr(scope, node.children[0], expected) }
+    if node.kind == "unary:&" || node.kind == "unary:&mut" {
+        let child = node.children[0]
+        let mutable = node.kind == "unary:&mut"
+        if !c.place(child) { return Err(c.issue(node.first, "borrow requires a place")) }
+        let inner = c.expr(scope, child, -1)?
+        if inner <= 0 { return Err(c.issue(node.first, "bootstrap references require a value type")) }
+        if mutable { let writable = c.writable_type(scope, child)? }
+        return Ok(reference(inner, mutable))
+    }
+    if node.kind == "unary:*" {
+        let inner = c.expr(scope, node.children[0], -1)?
+        if !is_reference(inner) { return Err(c.issue(node.first, "dereference requires a reference")) }
+        return Ok(dereference(inner))
+    }
+    if node.kind == "try" {
+        let result = c.expr(scope, node.children[0], -1)?
+        if !is_result(result) || !is_result(scope.return_type) {
+            return Err(c.issue(node.first, "? requires a Result operand and return type"))
+        }
+        if result_variant_type(result, 2) != result_variant_type(scope.return_type, 2) {
+            return Err(c.issue(node.first, "? error type differs from the function return type"))
+        }
+        return Ok(result_variant_type(result, 1))
+    }
     if node.kind == "call" { return c.call(scope, id, expected) }
     if node.kind == "struct_literal" { return c.struct_literal(scope, id) }
     if node.kind == "field" {
@@ -403,7 +605,10 @@ fn (c: &Checked) arm_expression(scope: &mut Scope, id: int, expected: int) -> Re
 fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let subject = c.expr(scope, node.children[0], -1)?
-    if !is_result(subject) { return Err(c.issue(node.first, "bootstrap match expects a Result")) }
+    let optional = is_option(subject)
+    if !is_result(subject) && !optional { return Err(c.issue(node.first, "bootstrap match expects Option or Result")) }
+    let mut first_variant = 1
+    if optional { first_variant = 3 }
     let is_expression = node.kind == "match_expression"
     let mut saw_ok = false
     let mut saw_err = false
@@ -414,19 +619,30 @@ fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Resul
         let arm = &c.tree.nodes[node.children[i]]
         let pattern = &c.tree.nodes[arm.children[0]]
         let variant = c.variant(pattern.children[0])
-        if variant == 0 || pattern.children[1] < 0 {
+        if optional {
+            if (variant == 3 && pattern.children[1] < 0) || (variant == 4 && pattern.children[1] >= 0) ||
+                (variant != 3 && variant != 4) {
+                return Err(c.issue(pattern.first, "expected Some(binding) or None"))
+            }
+        } else if (variant != 1 && variant != 2) || pattern.children[1] < 0 {
             return Err(c.issue(pattern.first, "expected Ok(binding) or Err(binding)"))
         }
-        if (variant == 1 && saw_ok) || (variant == 2 && saw_err) {
+        if (variant == first_variant && saw_ok) || (variant == first_variant + 1 && saw_err) {
+            if optional { return Err(c.issue(pattern.first, "duplicate Option match arm")) }
             return Err(c.issue(pattern.first, "duplicate Result match arm"))
         }
-        if variant == 1 { saw_ok = true }
+        if variant == first_variant { saw_ok = true }
         else { saw_err = true }
         let visible = scope.visible
-        let bound = c.define_node(scope, pattern.children[1], result_variant_type(subject, variant), false)?
+        if pattern.children[1] >= 0 {
+            let mut payload = option_payload(subject)
+            if !optional { payload = result_variant_type(subject, variant) }
+            let bound = c.define_node(scope, pattern.children[1], payload, false)?
+        }
         let body = &c.tree.nodes[arm.children[1]]
         if is_expression {
             let actual = c.arm_expression(scope, arm.children[1], value_type)?
+            if is_reference(actual) { return Err(c.issue(body.first, "match expressions cannot return references in bootstrap")) }
             if actual == 0 { return Err(c.issue(body.first, "match expression arm needs a value")) }
             if value_type < 0 { value_type = actual }
             if actual != value_type { return Err(c.issue(body.first, "match arms have different types")) }
@@ -440,7 +656,10 @@ fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Resul
         scope.visible = visible
         i = i + 1
     }
-    if !saw_ok || !saw_err { return Err(c.issue(node.first, "match must cover both Ok and Err")) }
+    if !saw_ok || !saw_err {
+        if optional { return Err(c.issue(node.first, "match must cover both Some and None")) }
+        return Err(c.issue(node.first, "match must cover both Ok and Err"))
+    }
     if is_expression { return Ok(value_type) }
     if all_return { return Ok(-2) }
     return Ok(0)
@@ -451,14 +670,36 @@ fn (c: &Checked) let_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::P
     let mut expected = -1
     if node.children[1] >= 0 { expected = c.type_at(c.tree.nodes[node.children[1]].first)? }
     let actual = c.expr(scope, node.children[2], expected)?
+    if is_mut_reference(actual) { return Err(c.issue(node.first, "local mutable reference bindings are outside the bootstrap subset")) }
     if actual == 0 { return Err(c.issue(node.first, "initializer must have a value")) }
     if expected >= 0 && actual != expected { return Err(c.issue(node.first, "initializer type mismatch")) }
     let installed = c.define_node(scope, node.children[0], actual, node.kind == "let_mut")?
     return Ok(false)
 }
 
+fn (c: &Checked) place(id: int) -> bool {
+    let node = &c.tree.nodes[id]
+    if node.kind == "name" { return node.next == node.first + 1 }
+    if node.kind == "field" || node.kind == "index" || node.kind == "group" {
+        return c.place(node.children[0])
+    }
+    return node.kind == "unary:*"
+}
+
 fn (c: &Checked) writable_type(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
+    let typ = c.raw_writable_type(scope, id)?
+    scope.types[id] = typ
+    return Ok(typ)
+}
+
+fn (c: &Checked) raw_writable_type(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let target = &c.tree.nodes[id]
+    if target.kind == "group" { return c.writable_type(scope, target.children[0]) }
+    if target.kind == "unary:*" {
+        let inner = c.expr(scope, target.children[0], -1)?
+        if !is_mut_reference(inner) { return Err(c.issue(target.first, "write requires a mutable reference")) }
+        return Ok(dereference(inner))
+    }
     if target.kind == "field" {
         let base = c.writable_type(scope, target.children[0])?
         return c.field_type(base, target.children[1])
@@ -467,12 +708,18 @@ fn (c: &Checked) writable_type(scope: &mut Scope, id: int) -> Result<int, import
         let base = c.writable_type(scope, target.children[0])?
         return c.subscript(scope, id)
     }
+    if target.kind == "name" {
+        let typ = c.expr(scope, id, -1)?
+        if is_mut_reference(typ) { return Ok(typ) }
+        if is_reference(typ) { return Err(c.issue(target.first, "assignment to immutable name")) }
+    }
     return c.mutable_local(&*scope, id)
 }
 
 fn (c: &Checked) assign(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let expected = c.writable_type(scope, node.children[0])?
+    if is_reference(expected) { return Err(c.issue(node.first, "cannot reassign a reference parameter")) }
     let actual = c.expr(scope, node.children[1], expected)?
     if actual != expected { return Err(c.issue(node.first, "assignment type mismatch")) }
     return Ok(false)
@@ -480,13 +727,16 @@ fn (c: &Checked) assign(scope: &mut Scope, id: int) -> Result<bool, imports::Par
 
 fn (c: &Checked) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
-    let iter = c.expr(scope, node.children[2], -1)?
+    let iter = dereference(c.expr(scope, node.children[2], -1)?)
     if !is_slice(iter) { return Err(c.issue(node.first, "for expects a slice")) }
     let visible = scope.visible
     if node.children[0] >= 0 {
         let key_bound = c.define_node(scope, node.children[0], 1, false)?
     }
-    let value_bound = c.define_node(scope, node.children[1], iter - 10, false)?
+    let elem = slice_element(iter)
+    let mut value_type = elem
+    if elem == 4 || is_struct(elem) { value_type = reference(elem, false) }
+    let value_bound = c.define_node(scope, node.children[1], value_type, false)?
     scope.loop_depth = scope.loop_depth + 1
     let done = c.block(scope, node.children[3])?
     scope.loop_depth = scope.loop_depth - 1
@@ -559,18 +809,24 @@ fn (c: &Checked) check() -> Result<[]int, imports::ParseError> {
     for _ in c.tree.nodes { push(&mut types, 0) }
     let mut scope = Scope { locals: [], visible: 0, loop_depth: 0, return_type: 0, types: types }
     let mut i = 0
-    for header in c.headers {
+    for header_index, header in c.headers {
         if header.kind != "fn" { continue }
         let root = c.tree.roots[i]
         i = i + 1
         let start = c.tree.nodes[root].first
         scope.visible = 0
         scope.return_type = c.type_at(header.return_type_token)?
+        if is_reference(scope.return_type) { return Err(c.issue(start, "returning references is outside the bootstrap subset")) }
+        if header.method {
+            let receiver_type = c.type_at(header.receiver_type_token)?
+            let binding = &c.graph.input.tokens[header.receiver_name_token]
+            let installed = c.define(&mut scope, binding.start, binding.end, receiver_type, false, header.receiver_name_token)?
+        }
         for param in header.bindings {
             let typ = c.type_at(param.type_token)?
             let bound = c.define(&mut scope, param.name.start, param.name.end, typ, false, param.type_token)?
         }
-        if c.word(header.name.start, header.name.end, [109, 97, 105, 110]) { // main
+        if c.is_entry(header_index) {
             has_main = true
             if scope.return_type != 0 && scope.return_type != 1 {
                 return Err(c.issue(start, "main must return nothing or int"))
@@ -590,17 +846,43 @@ fn (c: &Checked) check() -> Result<[]int, imports::ParseError> {
     return Ok(scope.types)
 }
 
+fn layout_ready(typ: int, available: &[]bool) -> bool {
+    if is_option(typ) { return layout_ready(option_payload(typ), available) }
+    if is_result(typ) {
+        return layout_ready(result_variant_type(typ, 1), available) && layout_ready(result_variant_type(typ, 2), available)
+    }
+    let mut base = typ
+    if is_struct_slice(typ) { base = slice_element(typ) }
+    return !is_struct(base) || (*available)[base - 10000]
+}
+
 fn (c: &Checked) layout() -> Result<[]int, imports::ParseError> {
     let mut available: []bool = []
     let mut count = 0
     for i, header in c.headers {
+        let receiver = c.type_at(header.receiver_type_token)?
+        let file = c.graph.input.tokens[header.name_token].file
+        if header.method && !is_struct(dereference(receiver)) {
+            return Err(c.issue(header.receiver_type_token, "method receiver must be a struct"))
+        }
         let mut j = 0
         while j < i {
             let prior = &c.headers[j]
-            if c.same_name(header.name.start, header.name.end, prior.name.start, prior.name.end) {
-                return Err(imports::ParseError { line: header.line, col: header.col, message: "duplicate declaration name" })
+            if header.method == prior.method && (header.method || file == c.graph.input.tokens[prior.name_token].file) &&
+                c.same_name(header.name.start, header.name.end, prior.name.start, prior.name.end) {
+                let previous_receiver = c.type_at(prior.receiver_type_token)?
+                if dereference(receiver) == dereference(previous_receiver) {
+                    return Err(imports::ParseError { line: header.line, col: header.col, message: "duplicate declaration name" })
+                }
             }
             j = j + 1
+        }
+        if !header.method {
+            for imported in c.graph.imports {
+                if imported.file == file && c.same_name(header.name.start, header.name.end, imported.start, imported.end) {
+                    return Err(c.issue(header.name_token, "declaration conflicts with import alias"))
+                }
+            }
         }
         let is_struct = header.kind == "struct"
         push(&mut available, !is_struct)
@@ -608,6 +890,7 @@ fn (c: &Checked) layout() -> Result<[]int, imports::ParseError> {
             count = count + 1
             for field_index, field in header.bindings {
                 let typed = c.type_at(field.type_token)?
+                if is_reference(typed) { return Err(c.issue(field.type_token, "struct fields cannot contain references")) }
                 let mut previous = 0
                 while previous < field_index {
                     let peer = &header.bindings[previous]
@@ -629,7 +912,7 @@ fn (c: &Checked) layout() -> Result<[]int, imports::ParseError> {
             let mut ready = true
             for binding in declaration.bindings {
                 let typ = c.type_at(binding.type_token)?
-                if typ >= 10000 && !available[typ - 10000] { ready = false }
+                if !layout_ready(typ, &available) { ready = false }
             }
             if ready {
                 available[index] = true
@@ -645,19 +928,23 @@ fn (c: &Checked) layout() -> Result<[]int, imports::ParseError> {
 }
 
 pub fn analyze(input: lexer::Lexed) -> Result<Checked, imports::ParseError> {
-    let headers = decl::parse_declarations(&input)?
     for tok in input.tokens {
         if tok.kind == "import" { return Err(imports::ParseError {
-            line: tok.line, col: tok.col, message: "imports are outside the bootstrap subset",
+            line: tok.line, col: tok.col, message: "imports require a source file path",
         }) }
     }
-    for header in headers {
-        if header.method { return Err(imports::ParseError {
-            line: header.line, col: header.col, message: "methods are outside the bootstrap subset",
-        }) }
-    }
-    let tree = bodies::parse_with_headers(&input, &headers)?
-    let mut checker = Checked { input: input, headers: headers, tree: tree, expr_types: [], struct_order: [] }
+    return analyze_graph(modules::Graph { input: input, files: [], imports: [] })
+}
+
+pub fn analyze_file(path: &string, bytes: []int) -> Result<Checked, imports::ParseError> {
+    let graph = modules::connect(path, bytes)?
+    return analyze_graph(graph)
+}
+
+fn analyze_graph(graph: modules::Graph) -> Result<Checked, imports::ParseError> {
+    let headers = decl::parse_declarations(&graph.input)?
+    let tree = bodies::parse_with_headers(&graph.input, &headers)?
+    let mut checker = Checked { graph: graph, headers: headers, tree: tree, expr_types: [], struct_order: [] }
     checker.struct_order = checker.layout()?
     checker.expr_types = checker.check()?
     return Ok(checker)

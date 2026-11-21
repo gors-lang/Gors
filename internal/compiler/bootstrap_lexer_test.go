@@ -399,8 +399,8 @@ func TestBootstrapSemanticChecker(t *testing.T) {
 		{"loop control", "fn main() { break }", "loop control outside a loop"},
 		{"bad index", "fn main() { let xs = [1]; println(xs[false]) }", "index or bound must be int"},
 		{"mixed slice", "fn main() { let xs = [1, true] }", "slice element type mismatch"},
-		{"unsupported method", "struct Box { value: int } fn (b: Box) get() -> int { return b.value } fn main() {}", "methods are outside"},
-		{"unsupported import", `import a "a.gors" fn main() {}`, "imports are outside"},
+		{"unsupported local mutable reference", "struct Box { value: int } fn main() { let mut b = Box { value: 1 }; let r = &mut b }", "local mutable reference bindings are outside"},
+		{"missing import", `import a "a.gors" fn main() {}`, "could not read module"},
 	}
 	for _, tc := range cases {
 		path := filepath.Join(dir, tc.name+".gors")

@@ -40,6 +40,18 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
     return i
 }
 
+func __gors_bytes_to_string(values []int64) string {
+    bytes := make([]byte, len(values))
+    for i, n := range values {
+        if n < 1 || n > 255 {
+            fmt.Fprintln(os.Stderr, "gors: bytes_to_string requires bytes in 1..255")
+            os.Exit(1)
+        }
+        bytes[i] = byte(n)
+    }
+    return string(bytes)
+}
+
 func __gors_slice_bounds(low, high, n int64) {
     if low < 0 || high < low || high > n {
         fmt.Fprintf(os.Stderr, "gors: slice bounds out of range [%d:%d] (len %d)\n", low, high, n)
@@ -776,6 +788,8 @@ func (g *gen) call(ex *ast.Call) string {
 			return "__gors_read_bytes(" + g.expr(ex.Args[0]) + ")"
 		case "write_text":
 			return "__gors_write_text(" + g.expr(ex.Args[0]) + ", " + g.expr(ex.Args[1]) + ")"
+		case "bytes_to_string":
+			return "__gors_bytes_to_string(" + g.expr(ex.Args[0]) + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {

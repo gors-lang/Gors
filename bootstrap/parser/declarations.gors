@@ -18,9 +18,12 @@ pub struct Declaration {
     line: int,
     col: int,
     name: Span,
+    name_token: int,
     bindings: []Binding,
     receiver: Option<Binding>,
     method: bool,
+    receiver_name_token: int,
+    receiver_type_token: int,
     return_type: Option<Span>,
     return_type_token: int,
     body: Option<Span>,
@@ -128,8 +131,9 @@ fn parse_struct(input: &lexer::Lexed, start: int, public: bool) -> Result<Declar
     let next = fields.next_token
     return Ok(Declaration {
         kind: "struct", public: public, line: input.tokens[start].line, col: input.tokens[start].col,
-        name: span(input, name, open), bindings: fields.bindings,
-        receiver: None, method: false, return_type: None, return_type_token: -1,
+        name: span(input, name, open), name_token: name, bindings: fields.bindings,
+        receiver: None, method: false, receiver_name_token: -1, receiver_type_token: -1,
+        return_type: None, return_type_token: -1,
         body: None, body_token: -1, next_token: next,
     })
 }
@@ -137,10 +141,14 @@ fn parse_struct(input: &lexer::Lexed, start: int, public: bool) -> Result<Declar
 fn parse_function(input: &lexer::Lexed, start: int, public: bool) -> Result<Declaration, imports::ParseError> {
     let mut name = start + 1
     let mut receiver: Option<Binding> = None
+    let mut receiver_name_token = -1
+    let mut receiver_type_token = -1
     let method = at(input, name, "(")
     if method {
+        receiver_name_token = name + 1
         let parsed = parse_binding(input, name + 1)?
         name = expect(input, parsed.next_token, ")")?
+        receiver_type_token = parsed.binding.type_token
         receiver = Some(parsed.binding)
     }
     let open = expect(input, name, "IDENT")?
@@ -158,8 +166,10 @@ fn parse_function(input: &lexer::Lexed, start: int, public: bool) -> Result<Decl
     let next = skip_body(input, body_start)?
     return Ok(Declaration {
         kind: "fn", public: public, line: input.tokens[start].line, col: input.tokens[start].col,
-        name: span(input, name, open), bindings: params.bindings,
-        receiver: receiver, method: method, return_type: return_type, return_type_token: return_type_token,
+        name: span(input, name, open), name_token: name, bindings: params.bindings,
+        receiver: receiver, method: method, receiver_name_token: receiver_name_token,
+        receiver_type_token: receiver_type_token,
+        return_type: return_type, return_type_token: return_type_token,
         body: Some(span(input, body_start, next)),
         body_token: body_start, next_token: next,
     })

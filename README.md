@@ -3,7 +3,7 @@
 [![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
 [![Prerelease v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
 
-GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. A second compiler, written in GoRs itself, already emits C23 for small programs such as a binary-safe file counter. Self-hosting is the project's next major milestone.
+GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. The bootstrap compiler, written in GoRs, can now compile its own sources through C23 and reproduce the same generated C in the next stage.
 
 [Quick start](#quick-start) · [Language reference](docs/language-v0.1.md) · [Examples](examples/) · [Changelog](CHANGELOG.md) · [Русский](README.ru.md)
 
@@ -72,9 +72,31 @@ fn main() {
 | Compiler | Current scope |
 | --- | --- |
 | `gors`, written in Go | C23 and Go backends, file modules, structs and methods, `Option`, `Result`, and ownership checks |
-| `gors-bootstrap`, written in GoRs | A lexer, parser, type checker, and C23 emitter for single-file programs. It supports integers, booleans, strings, slices, structs by value, functions, loops, `Result`, `match`, and file I/O |
+| `gors-bootstrap`, written in GoRs | A self-hosting lexer, parser, type checker, and C23 emitter. Its subset includes file modules, structs, methods, slices, references, `Option`, `Result`, and `?` |
 
-The bootstrap compiler can build `fib.gors`, `echo.gors`, `wc.gors`, and `point.gors` with GCC. Struct support includes literals, nested struct fields, field mutation, and passing and returning structs by value. Methods, references, file modules, slices of structs, and structs as `Result` payloads are outside the current bootstrap subset. Compiling the bootstrap compiler's own GoRs sources still requires the main compiler. [Bootstrap sources](bootstrap/)
+The bootstrap compiler can build its own sources and the bundled examples listed below with GCC. Import paths are normalized lexically. The bootstrap supports shared local references, mutable reference arguments, and by-value struct and slice payloads in `Option` and `Result`. Returned references, local mutable reference bindings, nested variants, floating-point emission, and the main compiler's full ownership checks are outside its current subset. [Bootstrap sources](bootstrap/)
+
+## Reproduce the self-build
+
+Build the seed compiler from the same source revision, then run the self-build with a C23 compiler. The seed from alpha.2 predates this milestone.
+
+```sh
+go run ./cmd/gors build bootstrap/cgen/main.gors --backend c -o stage1
+./stage1 emit bootstrap/cgen/main.gors -o stage2.c
+gcc -std=c23 -O2 stage2.c -o stage2
+./stage2 emit bootstrap/cgen/main.gors -o stage3.c
+cmp stage2.c stage3.c
+```
+
+The generated C must match byte for byte. After building stage 1, the remaining commands run with Go absent from PATH.
+
+Archives built from this revision include the verified `gors-bootstrap.c` and the `bootstrap/` sources. From an extracted archive, GCC is sufficient to build the compiler and regenerate its C:
+
+```sh
+gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
+./gors-bootstrap emit bootstrap/cgen/main.gors -o rebuilt.c
+cmp gors-bootstrap.c rebuilt.c
+```
 
 ## Build and run the bootstrap compiler
 
@@ -110,6 +132,8 @@ go run ./tools/package -out dist
 ```
 
 Tests build and run programs through both backends. They check output, exit codes, ownership diagnostics, and the bootstrap's generated C. The full test suite requires Go and GCC with C23 support.
+
+Packaging also requires a C23 compiler. It compares C emitted by consecutive bootstrap stages before writing either archive. Use `-cc` to select the compiler executable.
 
 If you try a release and find a bug or a confusing diagnostic, share a small `.gors` reproducer with your OS, backend, and `gors --version`. [Open an issue](https://github.com/rxzsu/Gors/issues/new)
 

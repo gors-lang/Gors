@@ -1,0 +1,208 @@
+import lexer "../lexer/lexer.gors"
+import decl "../parser/declarations.gors"
+import parser "../parser/imports.gors"
+
+pub struct File {
+    path: string,
+    complete: bool,
+}
+
+pub struct Import {
+    file: int,
+    start: int,
+    end: int,
+    target: int,
+}
+
+pub struct Graph {
+    input: lexer::Lexed,
+    files: []File,
+    imports: []Import,
+}
+
+fn separator(ch: string) -> bool { return ch == "/" || ch == "\\" }
+
+fn normalize(path: &string) -> string {
+    let mut prefix = ""
+    let mut start = 0
+    if len(*path) >= 2 && (*path)[1:2] == ":" {
+        prefix = (*path)[:2]
+        start = 2
+    }
+    let rooted = start < len(*path) && separator((*path)[start:start + 1])
+    if rooted {
+        prefix = prefix + "/"
+        start = start + 1
+        if start == 1 && len(*path) > 1 && separator((*path)[1:2]) {
+            prefix = "//"
+            start = 2
+        }
+    }
+    let root_size = len(prefix)
+    let unc = prefix == "//"
+    let mut marks: []int = []
+    let mut parents: []bool = []
+    let mut depth = 0
+    while start < len(*path) {
+        let mut end = start
+        while end < len(*path) && !separator((*path)[end:end + 1]) { end = end + 1 }
+        let part = (*path)[start:end]
+        start = end + 1
+        if part == "" || part == "." { continue }
+        let parent = part == ".."
+        if parent && depth > 0 && (!unc || depth > 2) && !parents[depth - 1] {
+            prefix = prefix[:marks[depth - 1]]
+            depth = depth - 1
+        } else if !parent || !rooted {
+            let mark = len(prefix)
+            if depth > 0 { prefix = prefix + "/" }
+            prefix = prefix + part
+            if depth == len(marks) {
+                push(&mut marks, mark)
+                push(&mut parents, parent)
+            } else {
+                marks[depth] = mark
+                parents[depth] = parent
+            }
+            depth = depth + 1
+        }
+    }
+    if root_size == 0 && len(prefix) == 0 { return "." }
+    return prefix
+}
+
+fn directory(path: &string) -> string {
+    let mut i = len(*path)
+    while i > 0 {
+        if (*path)[i - 1:i] == "/" { return (*path)[:i] }
+        i = i - 1
+    }
+    if len(*path) >= 2 && (*path)[1:2] == ":" { return (*path)[:2] }
+    return ""
+}
+
+fn decode_path(input: &lexer::Lexed, item: &parser::ImportDecl) -> Result<string, parser::ParseError> {
+    let mut bytes: []int = []
+    let mut i = item.path_start
+    while i < item.path_end {
+        let mut byte = input.source[i]
+        i = i + 1
+        if byte == 92 && i < item.path_end {
+            byte = input.source[i]
+            i = i + 1
+            if byte == 110 { byte = 10 }
+            else if byte == 116 { byte = 9 }
+            else if byte == 114 { byte = 13 }
+            else if byte == 48 { byte = 0 }
+            else if byte != 92 && byte != 34 { push(&mut bytes, 92) }
+        }
+        if byte == 0 {
+            return Err(parser::ParseError { line: item.line, col: item.col, message: "module path contains a null byte" })
+        }
+        push(&mut bytes, byte)
+    }
+    let path = bytes_to_string(bytes)
+    if len(path) == 0 || separator(path[:1]) || (len(path) >= 2 && path[1:2] == ":") {
+        return Err(parser::ParseError { line: item.line, col: item.col, message: "import requires a relative file path" })
+    }
+    return Ok(path)
+}
+
+fn imports_in(input: &lexer::Lexed) -> Result<[]parser::ImportDecl, parser::ParseError> {
+    let headers = decl::parse_declarations(input)?
+    let mut items: []parser::ImportDecl = []
+    let mut i = 0
+    for header in headers {
+        let batch = collect_imports(input, &mut items, i)?
+        i = header.next_token
+    }
+    let last = collect_imports(input, &mut items, i)?
+    return Ok(items)
+}
+
+fn collect_imports(input: &lexer::Lexed, items: &mut []parser::ImportDecl, start: int) -> Result<bool, parser::ParseError> {
+    let prefix = parser::parse_imports_from(input, start)?
+    for item in prefix.imports {
+        push(items, parser::ImportDecl {
+            line: item.line, col: item.col, alias_start: item.alias_start, alias_end: item.alias_end,
+            path_start: item.path_start, path_end: item.path_end,
+        })
+    }
+    return Ok(true)
+}
+
+fn same_alias(input: &lexer::Lexed, a: int, a_end: int, b: int, b_end: int) -> bool {
+    if a_end - a != b_end - b { return false }
+    let mut i = 0
+    while i < a_end - a {
+        if input.source[a + i] != input.source[b + i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn attach_import(graph: &mut Graph, module_id: int, item: &parser::ImportDecl,
+    tree: &lexer::Lexed, base_path: &string, offset: int, depth: int) -> Result<bool, parser::ParseError> {
+    let start = offset + item.alias_start
+    let end = offset + item.alias_end
+    for link in graph.imports {
+        if link.file == module_id && same_alias(&graph.input, start, end, link.start, link.end) {
+            return Err(parser::ParseError { line: item.line, col: item.col, message: "duplicate import alias" })
+        }
+    }
+    let relative = decode_path(tree, item)?
+    let joined = directory(base_path) + relative
+    let target_path = normalize(&joined)
+    let target = load(graph, &target_path, item.line, item.col, depth + 1)?
+    push(&mut graph.imports, Import { file: module_id, start: start, end: end, target: target })
+    return Ok(true)
+}
+
+fn attach(graph: &mut Graph, path: &string, bytes: []int, depth: int) -> Result<int, parser::ParseError> {
+    let tree = lexer::scan(bytes)
+    let items = imports_in(&tree)?
+    let module_id = len(graph.files)
+    push(&mut graph.files, File { path: *path + "", complete: false })
+    let offset = len(graph.input.source)
+    for byte in tree.source { push(&mut graph.input.source, byte) }
+    for tok in tree.tokens {
+        if tok.kind != "EOF" {
+            push(&mut graph.input.tokens, lexer::Token {
+                kind: tok.kind + "", line: tok.line, col: tok.col,
+                start: offset + tok.start, end: offset + tok.end, file: module_id,
+            })
+        }
+    }
+    for item in items {
+        let linked = attach_import(graph, module_id, item, &tree, path, offset, depth)?
+    }
+    graph.files[module_id].complete = true
+    return Ok(module_id)
+}
+
+fn load(graph: &mut Graph, path: &string, line: int, col: int, depth: int) -> Result<int, parser::ParseError> {
+    for i, file in graph.files {
+        if file.path == *path {
+            if !file.complete {
+                return Err(parser::ParseError { line: line, col: col, message: "cyclic import: " + *path })
+            }
+            return Ok(i)
+        }
+    }
+    if depth > 128 {
+        return Err(parser::ParseError { line: line, col: col, message: "module nesting exceeds 128 imports" })
+    }
+    match read_bytes(*path) {
+        Ok(bytes) => { return attach(graph, path, bytes, depth) }
+        Err(_) => { return Err(parser::ParseError { line: line, col: col, message: "could not read module: " + *path }) }
+    }
+}
+
+pub fn connect(path: &string, bytes: []int) -> Result<Graph, parser::ParseError> {
+    let entry = normalize(path)
+    let mut graph = Graph { input: lexer::Lexed { source: [], tokens: [] }, files: [], imports: [] }
+    let attached = attach(&mut graph, &entry, bytes, 0)?
+    let end = len(graph.input.source)
+    push(&mut graph.input.tokens, lexer::Token { kind: "EOF", line: 1, col: 1, start: end, end: end, file: 0 })
+    return Ok(graph)
+}

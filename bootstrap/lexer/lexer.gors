@@ -6,6 +6,7 @@ pub struct Token {
     col: int,
     start: int,
     end: int,
+    file: int,
 }
 
 pub struct Lexed {
@@ -326,11 +327,11 @@ pub fn scan(bytes: []int) -> Lexed {
         let line = cursor.line
         let col = cursor.col
         let kind = cursor.scan_token(&categories)
-        push(&mut tokens, Token { kind: kind, line: line, col: col, start: start, end: cursor.offset })
+        push(&mut tokens, Token { kind: kind, line: line, col: col, start: start, end: cursor.offset, file: 0 })
         cursor.skip_space()
     }
     push(&mut tokens, Token {
-        kind: "EOF", line: cursor.line, col: cursor.col, start: cursor.offset, end: cursor.offset,
+        kind: "EOF", line: cursor.line, col: cursor.col, start: cursor.offset, end: cursor.offset, file: 0,
     })
     return Lexed { source: cursor.bytes, tokens: tokens }
 }

@@ -1139,6 +1139,17 @@ func (c *checker) checkCall(ex *ast.Call) Type {
 				}
 			}
 			return &ResultT{Ok: Bool, Err: String}
+		case "bytes_to_string":
+			if len(ex.Args) != 1 {
+				c.errf("E186", ex.At, "bytes_to_string expects one []int argument")
+				return nil
+			}
+			want := &Slice{Elem: Int}
+			t := c.checkExprExpected(ex.Args[0], want)
+			if t != nil && !sameType(t, want) {
+				c.errf("E186", ex.Args[0].Pos(), "bytes_to_string expects []int, got %s", t.String())
+			}
+			return String
 		case "push":
 			if len(ex.Args) != 2 {
 				c.errf("E155", ex.At, "push takes exactly two arguments: push(&mut xs, value)")
@@ -1250,7 +1261,7 @@ func (c *checker) resolveMethod(field *ast.Field) (*FuncSig, *StructT) {
 
 func isBuiltin(name string) bool {
 	switch name {
-	case "println", "print", "eprintln", "len", "read_bytes", "write_text":
+	case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string":
 		return true
 	}
 	return false

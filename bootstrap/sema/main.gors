@@ -1,8 +1,7 @@
-import lexer "../lexer/lexer.gors"
 import sema "checker.gors"
 
-fn check_file(bytes: []int) -> int {
-    match sema::check(lexer::scan(bytes)) {
+fn check_file(path: &string, bytes: []int) -> int {
+    match sema::analyze_file(path, bytes) {
         Ok(_) => { return 0 }
         Err(issue) => {
             eprintln(issue.line, issue.col, issue.message)
@@ -18,7 +17,7 @@ fn main(args: []string) -> int {
     }
     let path = args[0]
     match read_bytes(path) {
-        Ok(bytes) => { return check_file(bytes) }
+        Ok(bytes) => { return check_file(&path, bytes) }
         Err(issue) => { eprintln("gors-check:", path, issue); return 2 }
     }
 }

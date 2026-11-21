@@ -1,4 +1,4 @@
-// Command package builds reproducible release archives using only Go tools.
+// Command package builds release archives using Go and a C23 compiler.
 // Run from the repository root: go run ./tools/package -out dist
 package main
 
@@ -10,24 +10,25 @@ import (
 	"crypto/sha256"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
-	"gors/internal/compiler"
 	"gors/internal/version"
 )
 
 func main() {
 	out := flag.String("out", "dist", "output directory")
+	cc := flag.String("cc", "gcc", "C23 compiler executable for the bootstrap verification")
 	flag.Parse()
-	if err := build(*out); err != nil {
+	if err := build(*out, *cc); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func build(out string) error {
+func build(out, cc string) error {
 	if err := os.MkdirAll(out, 0755); err != nil {
 		return err
 	}
@@ -36,9 +37,24 @@ func build(out string) error {
 		return err
 	}
 	defer os.RemoveAll(work)
-	bootstrap, errs := compiler.CompileFile("bootstrap/cgen/main.gors", compiler.BackendC)
-	if len(errs) != 0 {
-		return fmt.Errorf("generate bootstrap C: %v", errs)
+	bootstrap, err := buildBootstrapSeed(work, cc)
+	if err != nil {
+		return err
+	}
+	docsAndSources := []string{
+		"README.md", "README.ru.md", "CHANGELOG.md", "LICENSE",
+		"docs/language-v0.1.md", "docs/language-v0.1.ru.md",
+		"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
+		"examples/wc.gors", "examples/point.gors", "examples/methods.gors", "examples/structs.gors",
+		"examples/modules/main.gors", "examples/modules/math.gors",
+	}
+	if err := filepath.WalkDir("bootstrap", func(path string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() && filepath.Ext(path) == ".gors" {
+			docsAndSources = append(docsAndSources, filepath.ToSlash(path))
+		}
+		return err
+	}); err != nil {
+		return err
 	}
 	var sums bytes.Buffer
 	for _, target := range []string{"linux", "windows"} {
@@ -60,13 +76,8 @@ func build(out string) error {
 			name string
 			data []byte
 			mode int64
-		}{{binary, data, 0755}, {"gors-bootstrap.c", []byte(bootstrap), 0644}}
-		for _, name := range []string{
-			"README.md", "README.ru.md", "CHANGELOG.md", "LICENSE",
-			"docs/language-v0.1.md", "docs/language-v0.1.ru.md",
-			"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
-			"examples/wc.gors",
-		} {
+		}{{binary, data, 0755}, {"gors-bootstrap.c", bootstrap, 0644}}
+		for _, name := range docsAndSources {
 			data, err := os.ReadFile(name)
 			if err != nil {
 				return err
