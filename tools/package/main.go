@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"gors/internal/compiler"
 	"gors/internal/version"
 )
 
@@ -35,6 +36,10 @@ func build(out string) error {
 		return err
 	}
 	defer os.RemoveAll(work)
+	bootstrap, errs := compiler.CompileFile("bootstrap/cgen/main.gors", compiler.BackendC)
+	if len(errs) != 0 {
+		return fmt.Errorf("generate bootstrap C: %v", errs)
+	}
 	var sums bytes.Buffer
 	for _, target := range []string{"linux", "windows"} {
 		binary := "gors"
@@ -55,8 +60,11 @@ func build(out string) error {
 			name string
 			data []byte
 			mode int64
-		}{{binary, data, 0755}}
-		for _, name := range []string{"README.md", "CHANGELOG.md", "docs/language-v0.1.md"} {
+		}{{binary, data, 0755}, {"gors-bootstrap.c", []byte(bootstrap), 0644}}
+		for _, name := range []string{
+			"README.md", "CHANGELOG.md", "docs/language-v0.1.md",
+			"examples/fib.gors", "examples/hello.gors", "examples/echo.gors", "examples/slices.gors",
+		} {
 			data, err := os.ReadFile(name)
 			if err != nil {
 				return err

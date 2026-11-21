@@ -1,4 +1,4 @@
-# GoRs 0.1.0
+# GoRs 1.0.0-alpha.1
 
 Язык, который берёт **простоту Go** и **строгость владения из Rust**.
 Компилятор написан на Go. Два бэкенда:
@@ -143,6 +143,33 @@ gors run bootstrap/sema/main.gors --backend c -- examples/fib.gors
 с номером строки и столбца и возвращает код 1. Структуры, методы, импорты,
 `Option`, `Result` и ссылки пока вне проверяемого подмножества. Проверка
 переносов владения и времён жизни остаётся в основном компиляторе.
+
+### Генератор C на GoRs
+
+Команда `emit` связывает лексер, парсер, проверку типов и генератор C23,
+написанные на GoRs. Она поддерживает `int`, `bool`, `string`, локальные
+переменные, функции и рекурсию, `if`, `while`, `break` и `continue`.
+Строки можно печатать, сравнивать, соединять и нарезать по байтам.
+`fn main(args: []string)` получает аргументы процесса. Слайсы `[]int`,
+`[]bool` и `[]string` поддерживают литералы, `len`, индексацию и обход
+через `for`. Для `let mut` доступны присваивание по индексу и
+`push(&mut xs, value)`. Срезы `[]int` и `[]bool` создают независимую копию.
+
+```sh
+gors build bootstrap/cgen/main.gors --backend c -o gors-bootstrap
+./gors-bootstrap emit examples/fib.gors > fib.c
+gcc -std=c23 -O2 fib.c -o fib
+./fib
+```
+
+`emit` печатает готовый C в stdout. При ошибке сообщает позицию в stderr
+и завершает работу без частичного C-файла. Сам генератор можно собрать
+заранее и использовать вместе с GCC без Go в `PATH`.
+
+Память динамических строк и буферов слайсов сгенерированной программы
+освобождается при завершении процесса. У строки есть явная байтовая длина,
+включая встроенные нулевые байты. На Windows аргументы поступают в кодировке
+C-рантайма.
 
 ## Синтаксис
 
@@ -423,12 +450,21 @@ help: Borrow the value with & instead of transferring ownership, or create a new
 Выход за границы в обоих бэкендах завершает процесс с кодом 1 и сообщением
 `gors: index N out of bounds (len M)` в stderr.
 
-### Архивы v0.1
+### Архивы 1.0.0-alpha.1
 
 ```sh
 go run ./tools/package -out dist
 ```
 
-Создаются CLI для Linux amd64 и Windows amd64, документация и `SHA256SUMS`.
-`gors --version` печатает `GoRs 0.1.0`. Упаковщик и CI сохраняют артефакты,
-не создавая Git-тег или публичный релиз.
+Создаются архивы для Linux amd64 и Windows amd64 с бинарником `gors`,
+автономным `gors-bootstrap.c`, примерами и документацией. Контрольные суммы
+записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.1`.
+
+Из распакованного архива bootstrap-компилятор можно собрать с GCC:
+
+```sh
+gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
+./gors-bootstrap emit examples/slices.gors > slices.c
+gcc -std=c23 -O2 slices.c -o slices
+./slices
+```

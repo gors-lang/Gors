@@ -19,13 +19,13 @@ struct Scope {
     return_type: int,
 }
 
-struct Checker {
+pub struct Checked {
     input: lexer::Lexed,
     headers: []decl::Declaration,
     tree: bodies::Bodies,
 }
 
-fn (c: &Checker) word(start: int, end: int, expected: []int) -> bool {
+pub fn (c: &Checked) word(start: int, end: int, expected: []int) -> bool {
     if end - start != len(expected) { return false }
     let mut i = 0
     while i < len(expected) {
@@ -35,7 +35,7 @@ fn (c: &Checker) word(start: int, end: int, expected: []int) -> bool {
     return true
 }
 
-fn (c: &Checker) same_name(a: int, a_end: int, b: int, b_end: int) -> bool {
+fn (c: &Checked) same_name(a: int, a_end: int, b: int, b_end: int) -> bool {
     if a_end - a != b_end - b { return false }
     let mut i = 0
     while i < a_end - a {
@@ -45,11 +45,11 @@ fn (c: &Checker) same_name(a: int, a_end: int, b: int, b_end: int) -> bool {
     return true
 }
 
-fn (c: &Checker) issue(token: int, message: string) -> imports::ParseError {
+pub fn (c: &Checked) issue(token: int, message: string) -> imports::ParseError {
     return decl::error_at(&c.input, token, message)
 }
 
-fn (c: &Checker) type_at(start: int) -> Result<int, imports::ParseError> {
+pub fn (c: &Checked) type_at(start: int) -> Result<int, imports::ParseError> {
     if start < 0 { return Ok(0) }
     let mut i = start
     let mut layers = 0
@@ -57,6 +57,7 @@ fn (c: &Checker) type_at(start: int) -> Result<int, imports::ParseError> {
         layers = layers + 10
         i = i + 2
     }
+    if layers > 10 { return Err(c.issue(start, "nested slices are outside the bootstrap subset")) }
     let tok = &c.input.tokens[i]
     if decl::at(&c.input, i + 1, "::") || decl::at(&c.input, i + 1, "<") {
         return Err(c.issue(start, "type is outside the bootstrap subset"))
@@ -68,7 +69,7 @@ fn (c: &Checker) type_at(start: int) -> Result<int, imports::ParseError> {
     return Err(c.issue(start, "type is outside the bootstrap subset"))
 }
 
-fn (c: &Checker) local(scope: &Scope, start: int, end: int) -> int {
+fn (c: &Checked) local(scope: &Scope, start: int, end: int) -> int {
     let mut i = scope.visible
     while i > 0 {
         i = i - 1
@@ -77,7 +78,7 @@ fn (c: &Checker) local(scope: &Scope, start: int, end: int) -> int {
     return -1
 }
 
-fn (c: &Checker) define(scope: &mut Scope, start: int, end: int, typ: int, mutable: bool, token: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) define(scope: &mut Scope, start: int, end: int, typ: int, mutable: bool, token: int) -> Result<bool, imports::ParseError> {
     if c.word(start, end, [95]) { return Ok(true) } // _
     if c.local(&*scope, start, end) >= 0 { return Err(c.issue(token, "name already declared in this scope")) }
     let binding = Local { start: start, end: end, typ: typ, mutable: mutable }
@@ -90,20 +91,44 @@ fn (c: &Checker) define(scope: &mut Scope, start: int, end: int, typ: int, mutab
     return Ok(true)
 }
 
-fn (c: &Checker) define_node(scope: &mut Scope, id: int, typ: int, mutable: bool) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) define_node(scope: &mut Scope, id: int, typ: int, mutable: bool) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let tok = &c.input.tokens[node.first]
     return c.define(scope, tok.start, tok.end, typ, mutable, node.first)
 }
 
-fn (c: &Checker) function(start: int, end: int) -> int {
+pub fn (c: &Checked) function(start: int, end: int) -> int {
     for i, header in c.headers {
         if c.same_name(start, end, header.name.start, header.name.end) { return i }
     }
     return -1
 }
 
-fn (c: &Checker) call(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) mutable_local(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
+    let target = &c.tree.nodes[id]
+    if target.kind != "name" || target.next != target.first + 1 {
+        return Err(c.issue(target.first, "expected a mutable local name"))
+    }
+    let tok = &c.input.tokens[target.first]
+    let i = c.local(scope, tok.start, tok.end)
+    if i < 0 { return Err(c.issue(target.first, "unknown assignment target")) }
+    if !scope.locals[i].mutable { return Err(c.issue(target.first, "assignment to immutable name")) }
+    return Ok(scope.locals[i].typ)
+}
+
+fn (c: &Checked) push_call(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
+    let node = &c.tree.nodes[id]
+    if len(node.children) != 3 { return Err(c.issue(node.first, "push expects two arguments")) }
+    let target = &c.tree.nodes[node.children[1]]
+    if target.kind != "unary:&mut" { return Err(c.issue(target.first, "push expects &mut slice")) }
+    let typ = c.mutable_local(scope, target.children[0])?
+    if typ < 10 { return Err(c.issue(target.first, "push expects &mut slice")) }
+    let value = c.expr(scope, node.children[2], typ - 10)?
+    if value != typ - 10 { return Err(c.issue(node.first, "push element type mismatch")) }
+    return Ok(0)
+}
+
+fn (c: &Checked) call(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let callee = &c.tree.nodes[node.children[0]]
     if callee.kind != "name" || callee.next != callee.first + 1 {
@@ -111,6 +136,7 @@ fn (c: &Checker) call(scope: &Scope, id: int) -> Result<int, imports::ParseError
     }
     let tok = &c.input.tokens[callee.first]
     let argc = len(node.children) - 1
+    if c.word(tok.start, tok.end, [112, 117, 115, 104]) { return c.push_call(scope, id) } // push
     if c.word(tok.start, tok.end, [108, 101, 110]) { // len
         if argc != 1 { return Err(c.issue(callee.first, "len expects one argument")) }
         let arg = c.expr(scope, node.children[1], -1)?
@@ -144,7 +170,7 @@ fn (c: &Checker) call(scope: &Scope, id: int) -> Result<int, imports::ParseError
     return c.type_at(header.return_type_token)
 }
 
-fn (c: &Checker) binary(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) binary(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let left = c.expr(scope, node.children[0], -1)?
     let right = c.expr(scope, node.children[1], -1)?
@@ -166,13 +192,14 @@ fn (c: &Checker) binary(scope: &Scope, id: int) -> Result<int, imports::ParseErr
     return Err(c.issue(node.first, "operator does not accept this type"))
 }
 
-fn (c: &Checker) slice_literal(scope: &Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) slice_literal(scope: &Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let mut elem = -1
     if expected >= 10 { elem = expected - 10 }
     for child in node.children {
         let actual = c.expr(scope, child, elem)?
         if actual == 0 { return Err(c.issue(node.first, "slice elements must have values")) }
+        if actual >= 10 { return Err(c.issue(node.first, "nested slices are outside the bootstrap subset")) }
         if elem == -1 { elem = actual }
         if actual != elem { return Err(c.issue(c.tree.nodes[child].first, "slice element type mismatch")) }
     }
@@ -180,7 +207,7 @@ fn (c: &Checker) slice_literal(scope: &Scope, id: int, expected: int) -> Result<
     return Ok(elem + 10)
 }
 
-fn (c: &Checker) subscript(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) subscript(scope: &Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let base = c.expr(scope, node.children[0], -1)?
     let mut i = 1
@@ -199,7 +226,7 @@ fn (c: &Checker) subscript(scope: &Scope, id: int) -> Result<int, imports::Parse
     return Err(c.issue(node.first, "cannot subscript this type"))
 }
 
-fn (c: &Checker) expr(scope: &Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) expr(scope: &Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     if node.kind == "INT" { return Ok(1) }
     if node.kind == "FLOAT" { return Ok(2) }
@@ -226,7 +253,7 @@ fn (c: &Checker) expr(scope: &Scope, id: int, expected: int) -> Result<int, impo
     return Err(c.issue(node.first, "expression is outside the bootstrap subset"))
 }
 
-fn (c: &Checker) let_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) let_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let mut expected = -1
     if node.children[1] >= 0 { expected = c.type_at(c.tree.nodes[node.children[1]].first)? }
@@ -237,23 +264,22 @@ fn (c: &Checker) let_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::P
     return Ok(false)
 }
 
-fn (c: &Checker) assign(scope: &Scope, id: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) assign(scope: &Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let target = &c.tree.nodes[node.children[0]]
-    if target.kind != "name" || target.next != target.first + 1 {
-        return Err(c.issue(target.first, "assignment target is outside the bootstrap subset"))
+    let mut expected = 0
+    if target.kind == "index" {
+        let base = c.mutable_local(scope, target.children[0])?
+        expected = c.subscript(scope, node.children[0])?
+    } else {
+        expected = c.mutable_local(scope, node.children[0])?
     }
-    let tok = &c.input.tokens[target.first]
-    let i = c.local(scope, tok.start, tok.end)
-    if i < 0 { return Err(c.issue(target.first, "unknown assignment target")) }
-    if !scope.locals[i].mutable { return Err(c.issue(target.first, "assignment to immutable name")) }
-    let expected = scope.locals[i].typ
     let actual = c.expr(scope, node.children[1], expected)?
     if actual != expected { return Err(c.issue(node.first, "assignment type mismatch")) }
     return Ok(false)
 }
 
-fn (c: &Checker) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let iter = c.expr(&*scope, node.children[2], -1)?
     if iter < 10 { return Err(c.issue(node.first, "for expects a slice")) }
@@ -269,7 +295,7 @@ fn (c: &Checker) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::P
     return Ok(false)
 }
 
-fn (c: &Checker) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     if node.kind == "let" || node.kind == "let_mut" { return c.let_stmt(scope, id) }
     if node.kind == "assign" { return c.assign(&*scope, id) }
@@ -311,7 +337,7 @@ fn (c: &Checker) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
     return Err(c.issue(node.first, "statement is outside the bootstrap subset"))
 }
 
-fn (c: &Checker) block(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
+fn (c: &Checked) block(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let visible = scope.visible
     let mut returns = false
@@ -323,7 +349,7 @@ fn (c: &Checker) block(scope: &mut Scope, id: int) -> Result<bool, imports::Pars
     return Ok(returns)
 }
 
-fn (c: &Checker) check() -> Result<bool, imports::ParseError> {
+fn (c: &Checked) check() -> Result<bool, imports::ParseError> {
     let mut has_main = false
     let mut scope = Scope { locals: [], visible: 0, loop_depth: 0, return_type: 0 }
     for i, header in c.headers {
@@ -358,7 +384,7 @@ fn (c: &Checker) check() -> Result<bool, imports::ParseError> {
     return Ok(true)
 }
 
-pub fn check(input: lexer::Lexed) -> Result<bool, imports::ParseError> {
+pub fn analyze(input: lexer::Lexed) -> Result<Checked, imports::ParseError> {
     let headers = decl::parse_declarations(&input)?
     for tok in input.tokens {
         if tok.kind == "import" { return Err(imports::ParseError {
@@ -371,6 +397,12 @@ pub fn check(input: lexer::Lexed) -> Result<bool, imports::ParseError> {
         }) }
     }
     let tree = bodies::parse_with_headers(&input, &headers)?
-    let checker = Checker { input: input, headers: headers, tree: tree }
-    return checker.check()
+    let checker = Checked { input: input, headers: headers, tree: tree }
+    let checked = checker.check()?
+    return Ok(checker)
+}
+
+pub fn check(input: lexer::Lexed) -> Result<bool, imports::ParseError> {
+    let checked = analyze(input)?
+    return Ok(true)
 }

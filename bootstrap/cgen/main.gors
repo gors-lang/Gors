@@ -1,0 +1,38 @@
+import lexer "../lexer/lexer.gors"
+import sema "../sema/checker.gors"
+import imports "../parser/imports.gors"
+import cgen "emitter.gors"
+
+fn compile(bytes: []int) -> Result<[]string, imports::ParseError> {
+    let program = sema::analyze(lexer::scan(bytes))?
+    return cgen::emit(&program)
+}
+
+fn emit_file(bytes: []int) -> int {
+    match compile(bytes) {
+        Ok(lines) => {
+            for line in lines { println(*line) }
+            return 0
+        }
+        Err(issue) => {
+            eprintln(issue.line, issue.col, issue.message)
+            return 1
+        }
+    }
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 2 {
+        eprintln("usage: gors-bootstrap emit <file>")
+        return 2
+    }
+    if args[0] != "emit" {
+        eprintln("usage: gors-bootstrap emit <file>")
+        return 2
+    }
+    let path = args[1]
+    match read_bytes(path) {
+        Ok(bytes) => { return emit_file(bytes) }
+        Err(issue) => { eprintln("gors-bootstrap:", path, issue); return 2 }
+    }
+}

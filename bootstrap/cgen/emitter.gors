@@ -1,0 +1,460 @@
+import sema "../sema/checker.gors"
+import imports "../parser/imports.gors"
+import runtime "runtime.gors"
+
+struct Output {
+    lines: []string,
+    serial: int,
+    depth: int,
+    return_type_token: int,
+}
+
+fn digit(n: int) -> string {
+    if n == 0 { return "0" }
+    if n == 1 { return "1" }
+    if n == 2 { return "2" }
+    if n == 3 { return "3" }
+    if n == 4 { return "4" }
+    if n == 5 { return "5" }
+    if n == 6 { return "6" }
+    if n == 7 { return "7" }
+    if n == 8 { return "8" }
+    if n == 9 { return "9" }
+    if n == 10 { return "a" }
+    if n == 11 { return "b" }
+    if n == 12 { return "c" }
+    if n == 13 { return "d" }
+    if n == 14 { return "e" }
+    return "f"
+}
+
+fn decimal(n: int) -> string {
+    if n < 10 { return digit(n) }
+    return decimal(n / 10) + digit(n % 10)
+}
+
+// Escaping every source byte gives an injective C name, including for Unicode.
+fn symbol(program: &sema::Checked, start: int, end: int, prefix: string) -> string {
+    let mut result = prefix
+    let mut i = start
+    while i < end {
+        let byte = program.input.source[i]
+        result = result + digit(byte / 16) + digit(byte % 16)
+        i = i + 1
+    }
+    return result
+}
+
+fn (out: &mut Output) line(text: string) {
+    let mut formatted = ""
+    let mut i = 0
+    while i < out.depth {
+        formatted = formatted + "    "
+        i = i + 1
+    }
+    push(&mut out.lines, formatted + text)
+}
+
+fn (out: &mut Output) temp() -> string {
+    let name = "temp_" + decimal(out.serial)
+    out.serial = out.serial + 1
+    return name
+}
+
+fn (out: &mut Output) save(value: string) -> string {
+    let name = out.temp()
+    out.line("typeof(" + value + ") " + name + " = " + value + ";")
+    return name
+}
+
+fn integer(program: &sema::Checked, first: int) -> Result<string, imports::ParseError> {
+    let tok = &program.input.tokens[first]
+    let mut i = tok.start
+    let mut value = 0
+    while i < tok.end {
+        let byte = program.input.source[i]
+        if byte != 95 {
+            if byte < 48 || byte > 57 { return Err(program.issue(first, "invalid decimal integer")) }
+            let d = byte - 48
+            if value > (9223372036854775807 - d) / 10 {
+                return Err(program.issue(first, "integer literal exceeds int"))
+            }
+            value = value * 10 + d
+        }
+        i = i + 1
+    }
+    return Ok("((int64_t)INT64_C(" + decimal(value) + "))")
+}
+
+fn octal_byte(byte: int) -> string {
+    return "\\" + digit(byte / 64) + digit(byte / 8 % 8) + digit(byte % 8)
+}
+
+fn quoted(program: &sema::Checked, first: int) -> string {
+    let tok = &program.input.tokens[first]
+    let mut result = "BOOT_STRING(\""
+    let mut i = tok.start + 1
+    while i < tok.end - 1 {
+        let mut byte = program.input.source[i]
+        i = i + 1
+        if byte == 92 {
+            byte = program.input.source[i]
+            i = i + 1
+            if byte == 13 && program.input.source[i] == 10 {
+                byte = 10
+                i = i + 1
+            }
+            if byte == 110 { byte = 10 } // n
+            else if byte == 116 { byte = 9 } // t
+            else if byte == 114 { byte = 13 } // r
+            else if byte == 48 { byte = 0 } // 0
+            else if byte != 92 && byte != 34 { result = result + octal_byte(92) }
+        }
+        result = result + octal_byte(byte)
+    }
+    return result + "\")"
+}
+
+fn ctype(program: &sema::Checked, token: int) -> Result<string, imports::ParseError> {
+    let typ = program.type_at(token)?
+    if typ == 0 { return Ok("void") }
+    if typ == 1 { return Ok("int64_t") }
+    if typ == 3 { return Ok("bool") }
+    if typ == 4 { return Ok("boot_str") }
+    if typ == 11 { return Ok("boot_ints") }
+    if typ == 13 { return Ok("boot_bools") }
+    if typ == 14 { return Ok("boot_strings") }
+    return Err(program.issue(token, "C emitter supports int, bool, string and their slices"))
+}
+
+fn signature(program: &sema::Checked, index: int) -> Result<string, imports::ParseError> {
+    let header = &program.headers[index]
+    let ret = ctype(program, header.return_type_token)?
+    let fname = symbol(program, header.name.start, header.name.end, "fn_")
+    let mut result = "static " + ret + " " + fname + "("
+    if len(header.bindings) == 0 { result = result + "void" }
+    for i, param in header.bindings {
+        if i > 0 { result = result + ", " }
+        let typ = ctype(program, param.type_token)?
+        let mut pname = symbol(program, param.name.start, param.name.end, "v_")
+        if program.word(param.name.start, param.name.end, [95]) { pname = "discard_" + decimal(i) }
+        result = result + typ + " " + pname
+    }
+    return Ok(result + ")")
+}
+
+fn print_kind(program: &sema::Checked, start: int, end: int) -> int {
+    if program.word(start, end, [112, 114, 105, 110, 116]) { return 1 } // print
+    if program.word(start, end, [112, 114, 105, 110, 116, 108, 110]) { return 2 } // println
+    if program.word(start, end, [101, 112, 114, 105, 110, 116, 108, 110]) { return 3 } // eprintln
+    return 0
+}
+
+fn emit_call(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let callee = &program.tree.nodes[node.children[0]]
+    let tok = &program.input.tokens[callee.first]
+    if program.word(tok.start, tok.end, [112, 117, 115, 104]) { // push
+        let borrow = &program.tree.nodes[node.children[1]]
+        let target = &program.tree.nodes[borrow.children[0]]
+        let name_token = &program.input.tokens[target.first]
+        let label = symbol(program, name_token.start, name_token.end, "v_")
+        let value = emit_expr(out, program, node.children[2])?
+        out.line("BOOT_PUSH(&" + label + ", " + value + ");")
+        return Ok("")
+    }
+    if program.word(tok.start, tok.end, [108, 101, 110]) { // len
+        let value = emit_expr(out, program, node.children[1])?
+        return Ok(out.save("(" + value + ").len"))
+    }
+    let printing = print_kind(program, tok.start, tok.end)
+    if printing != 0 {
+        let mut stream = "stdout"
+        if printing == 3 { stream = "stderr" }
+        let mut args: []string = []
+        let mut i = 1
+        while i < len(node.children) {
+            let value = emit_expr(out, program, node.children[i])?
+            push(&mut args, value)
+            i = i + 1
+        }
+        for j, arg in args {
+            if j > 0 { out.line("fputc(' ', " + stream + ");") }
+            out.line("BOOT_PRINT(" + stream + ", " + *arg + ");")
+        }
+        if printing >= 2 { out.line("fputc('\\n', " + stream + ");") }
+        return Ok("")
+    }
+
+    let function_index = program.function(tok.start, tok.end)
+    if function_index < 0 { return Err(program.issue(callee.first, "call is outside the C emitter subset")) }
+    let ret_token = program.headers[function_index].return_type_token
+    let mut text = symbol(program, tok.start, tok.end, "fn_") + "("
+    let mut k = 1
+    while k < len(node.children) {
+        if k > 1 { text = text + ", " }
+        let expected = ctype(program, program.headers[function_index].bindings[k - 1].type_token)?
+        let arg_text = emit_typed_expr(out, program, node.children[k], expected)?
+        text = text + arg_text
+        k = k + 1
+    }
+    text = text + ")"
+    if ret_token < 0 {
+        out.line(text + ";")
+        return Ok("")
+    }
+    return Ok(out.save(text))
+}
+
+fn emit_binary(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let op = node.kind[7:]
+    let left = emit_expr(out, program, node.children[0])?
+    if op == "&&" || op == "||" {
+        let name = out.temp()
+        out.line("bool " + name + " = " + left + ";")
+        if op == "&&" { out.line("if (" + name + ") {") }
+        else { out.line("if (!" + name + ") {") }
+        out.depth = out.depth + 1
+        let right_cond = emit_expr(out, program, node.children[1])?
+        out.line(name + " = " + right_cond + ";")
+        out.depth = out.depth - 1
+        out.line("}")
+        return Ok(name)
+    }
+    let right = emit_expr(out, program, node.children[1])?
+    if op == "+" { return Ok(out.save("BOOT_ADD(" + left + ", " + right + ")")) }
+    if op == "==" { return Ok(out.save("BOOT_EQUAL(" + left + ", " + right + ")")) }
+    if op == "!=" { return Ok(out.save("(bool)!BOOT_EQUAL(" + left + ", " + right + ")")) }
+    if op == "-" || op == "*" {
+        return Ok(out.save("(int64_t)((uint64_t)" + left + " " + op + " (uint64_t)" + right + ")"))
+    }
+    if op == "/" { return Ok(out.save("boot_div(" + left + ", " + right + ")")) }
+    if op == "%" { return Ok(out.save("boot_rem(" + left + ", " + right + ")")) }
+    return Ok(out.save("(bool)(" + left + " " + op + " " + right + ")"))
+}
+
+fn emit_expr(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    if node.kind == "INT" { return integer(program, node.first) }
+    if node.kind == "STRING" { return Ok(quoted(program, node.first)) }
+    if node.kind == "true" || node.kind == "false" { return Ok("(bool)" + node.kind) }
+    if node.kind == "name" {
+        let tok = &program.input.tokens[node.first]
+        return Ok(symbol(program, tok.start, tok.end, "v_"))
+    }
+    if node.kind == "group" { return emit_expr(out, program, node.children[0]) }
+    if node.kind == "call" { return emit_call(out, program, id) }
+    if node.kind == "slice_literal" { return emit_slice_literal(out, program, id) }
+    if node.kind == "index" || node.kind == "slice" {
+        return emit_subscript(out, program, id)
+    }
+    if len(node.kind) >= 7 && node.kind[:7] == "binary:" { return emit_binary(out, program, id) }
+    if node.kind == "unary:!" {
+        let cond = emit_expr(out, program, node.children[0])?
+        return Ok(out.save("(bool)(!" + cond + ")"))
+    }
+    if node.kind == "unary:-" {
+        let value = emit_expr(out, program, node.children[0])?
+        return Ok(out.save("(int64_t)(UINT64_C(0) - (uint64_t)" + value))
+    }
+    return Err(program.issue(node.first, "expression is outside the C emitter subset"))
+}
+
+fn emit_typed_expr(out: &mut Output, program: &sema::Checked, id: int, expected: string) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    if node.kind == "group" { return emit_typed_expr(out, program, node.children[0], expected + "") }
+    if node.kind == "slice_literal" && len(node.children) == 0 { return Ok("(" + expected + "){0}") }
+    return emit_expr(out, program, id)
+}
+
+fn emit_slice_literal(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let count = len(node.children)
+    if count == 0 { return Err(program.issue(node.first, "empty slice needs an explicit type context")) }
+    let first = emit_expr(out, program, node.children[0])?
+    let mut items = first + ""
+    let mut i = 1
+    while i < count {
+        let item = emit_expr(out, program, node.children[i])?
+        items = items + ", " + item
+        i = i + 1
+    }
+    return Ok(out.save("BOOT_MAKE(((typeof(" + first + ")[]){" + items + "}), " + decimal(count) + ")"))
+}
+
+fn emit_subscript(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let base = emit_expr(out, program, node.children[0])?
+    let mut low = "INT64_C(0)"
+    if node.children[1] >= 0 { low = emit_expr(out, program, node.children[1])? }
+    if node.kind == "index" { return Ok(out.save("*BOOT_INDEX(" + base + ", " + low + ")")) }
+    let mut high = "(" + base + ").len"
+    if node.children[2] >= 0 { high = emit_expr(out, program, node.children[2])? }
+    return Ok(out.save("BOOT_SLICE(" + base + ", " + low + ", " + high + ")"))
+}
+
+fn emit_contents(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    for child in node.children {
+        let emitted = emit_stmt(out, program, child)?
+    }
+    return Ok(true)
+}
+
+fn emit_body(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    out.depth = out.depth + 1
+    let emitted = emit_contents(out, program, id)?
+    out.depth = out.depth - 1
+    out.line("}")
+    return Ok(true)
+}
+
+fn emit_loop_binding(out: &mut Output, program: &sema::Checked, id: int, value: string) {
+    if id < 0 { return }
+    let node = &program.tree.nodes[id]
+    let tok = &program.input.tokens[node.first]
+    if program.word(tok.start, tok.end, [95]) { return }
+    let label = symbol(program, tok.start, tok.end, "v_")
+    out.line("typeof(" + value + ") " + label + " = " + value + ";")
+}
+
+fn emit_for(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let values = emit_expr(out, program, node.children[2])?
+    let iter = out.save(values)
+    let i = out.temp()
+    out.line("for (int64_t " + i + " = 0; " + i + " < " + iter + ".len; ++" + i + ") {")
+    out.depth = out.depth + 1
+    emit_loop_binding(out, program, node.children[0], i + "")
+    emit_loop_binding(out, program, node.children[1], "*BOOT_INDEX(" + iter + ", " + i + ")")
+    let emitted = emit_contents(out, program, node.children[3])?
+    out.depth = out.depth - 1
+    out.line("}")
+    return Ok(true)
+}
+
+fn emit_assignment(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let target = &program.tree.nodes[node.children[0]]
+    let mut lvalue = ""
+    if target.kind == "index" {
+        let base = emit_expr(out, program, target.children[0])?
+        let i = emit_expr(out, program, target.children[1])?
+        let address = out.save("BOOT_INDEX(" + base + ", " + i + ")")
+        lvalue = "*" + address
+    } else {
+        let tok = &program.input.tokens[target.first]
+        lvalue = symbol(program, tok.start, tok.end, "v_")
+    }
+    let result = emit_typed_expr(out, program, node.children[1], "typeof(" + lvalue + ")")?
+    out.line(lvalue + " = " + result + ";")
+    return Ok(true)
+}
+
+fn emit_stmt(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    if node.kind == "assign" { return emit_assignment(out, program, id) }
+    if node.kind == "let" || node.kind == "let_mut" {
+        let name = &program.tree.nodes[node.children[0]]
+        let tok = &program.input.tokens[name.first]
+        let label = symbol(program, tok.start, tok.end, "v_")
+        let mut initialized = ""
+        if node.children[1] < 0 { initialized = emit_expr(out, program, node.children[2])? }
+        else {
+            let annotation = &program.tree.nodes[node.children[1]]
+            let typ = ctype(program, annotation.first)?
+            initialized = emit_typed_expr(out, program, node.children[2], typ)?
+        }
+        if program.word(tok.start, tok.end, [95]) { out.line("(void)(" + initialized + ");") }
+        else { out.line("typeof(" + initialized + ") " + label + " = " + initialized + ";") }
+        return Ok(true)
+    }
+    if node.kind == "expr_stmt" {
+        let value = emit_expr(out, program, node.children[0])?
+        if len(value) != 0 { out.line("(void)(" + value + ");") }
+        return Ok(true)
+    }
+    if node.kind == "return" {
+        if len(node.children) == 0 { out.line("return;") }
+        else {
+            let typ = ctype(program, out.return_type_token)?
+            let result = emit_typed_expr(out, program, node.children[0], typ)?
+            out.line("return " + result + ";")
+        }
+        return Ok(true)
+    }
+    if node.kind == "block" {
+        out.line("{")
+        return emit_body(out, program, id)
+    }
+    if node.kind == "if" {
+        let cond = emit_expr(out, program, node.children[1])?
+        out.line("if (" + cond + ") {")
+        let branch = emit_body(out, program, node.children[2])?
+        if node.children[3] >= 0 {
+            out.line("else {")
+            out.depth = out.depth + 1
+            let otherwise = emit_stmt(out, program, node.children[3])?
+            out.depth = out.depth - 1
+            out.line("}")
+        }
+        return Ok(true)
+    }
+    if node.kind == "while" {
+        out.line("while (true) {")
+        out.depth = out.depth + 1
+        let control = emit_expr(out, program, node.children[0])?
+        out.line("if (!" + control + ") break;")
+        let loop_body = emit_contents(out, program, node.children[1])?
+        out.depth = out.depth - 1
+        out.line("}")
+        return Ok(true)
+    }
+    if node.kind == "for" { return emit_for(out, program, id) }
+    if node.kind == "break" || node.kind == "continue" {
+        out.line(node.kind + ";")
+        return Ok(true)
+    }
+    return Err(program.issue(node.first, "statement is outside the C emitter subset"))
+}
+
+pub fn emit(program: &sema::Checked) -> Result<[]string, imports::ParseError> {
+    let mut out = Output { lines: runtime::prelude(), serial: 0, depth: 0, return_type_token: -1 }
+    out.line("")
+    for i, _ in program.headers {
+        let prototype = signature(program, i)?
+        out.line(prototype + ";")
+    }
+    out.line("")
+    for j, header in program.headers {
+        out.return_type_token = header.return_type_token
+        let definition = signature(program, j)?
+        out.line(definition + " {")
+        let emitted = emit_body(&mut out, program, program.tree.roots[j])?
+        out.line("")
+    }
+    let main_index = find_main(program)
+    let main_header = &program.headers[main_index]
+    let entry = symbol(program, main_header.name.start, main_header.name.end, "fn_")
+    let mut invoke = entry + "()"
+    if len(main_header.bindings) == 0 { out.line("int main(void) {") }
+    else {
+        out.line("int main(int argc, char **argv) {")
+        invoke = entry + "(boot_argv(argc, argv))"
+    }
+    if main_header.return_type_token >= 0 { out.line("    return (int)((uint64_t)" + invoke + " & 255);") }
+    else {
+        out.line("    " + invoke + ";")
+        out.line("    return 0;")
+    }
+    out.line("}")
+    return Ok(out.lines)
+}
+
+fn find_main(program: &sema::Checked) -> int {
+    for i, header in program.headers {
+        if program.word(header.name.start, header.name.end, [109, 97, 105, 110]) { return i }
+    }
+    return -1
+}
