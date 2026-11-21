@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-alpha.3
 
 - Release archives include a verified, self-generated `gors-bootstrap.c` and
   the bootstrap GoRs sources. The packager requires identical C output from

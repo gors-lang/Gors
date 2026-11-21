@@ -1,4 +1,4 @@
 // Package version identifies the compiler's language release.
 package version
 
-const Version = "1.0.0-alpha.2"
+const Version = "1.0.0-alpha.3"

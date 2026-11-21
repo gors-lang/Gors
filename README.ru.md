@@ -3,11 +3,12 @@
 [English](README.md)
 
 [![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
-[![Предварительный релиз v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
+[![Предварительный релиз v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.3)
 
 GoRs — компилируемый язык с простым синтаксисом и статической проверкой
 владения и заимствований. Основной компилятор генерирует C23 или Go.
-Компилятор на самом GoRs уже собирает небольшие утилиты через C23.
+Компилятор на GoRs собирает собственные исходники через C23 и на следующей
+стадии воспроизводит тот же C побайтно.
 
 [Скачать](#быстрый-старт) · [Спецификация языка](docs/language-v0.1.ru.md) · [Примеры](examples/) · [История изменений](CHANGELOG.md)
 
@@ -18,10 +19,10 @@ GoRs — компилируемый язык с простым синтакси�
 
 | Платформа | Скачать | Запустить из распакованного архива |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/SHA256SUMS)
+Программа напечатает `hello from GoRs`. [Контрольные суммы SHA-256](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
 
 ```rust
 fn main() {
@@ -35,10 +36,9 @@ fn main() {
 | Компонент | Что уже работает |
 | --- | --- |
 | Основной компилятор (Go) | Бэкенды C23 и Go, файловые модули, структуры и методы, проверка владения и заимствований |
-| [Bootstrap-компилятор](#генератор-c-на-gors) (GoRs) | Генерация C23 для подмножества языка, включая строки, слайсы, `Result`, `match` и файловый ввод-вывод. Собирает `fib`, `echo` и `wc` |
+| [Bootstrap-компилятор](#архивы-100-alpha3) (GoRs) | Самосборка через C23, файловые модули, структуры, методы, слайсы, ссылки, `Option`, `Result` и `?` |
 
-Следующая веха работы над самосборкой — перенести поддержку структур, методов
-и файловых модулей в bootstrap-компилятор.
+Полная проверка владения и времён жизни пока остаётся в основном компиляторе.
 
 ## Модули и match
 
@@ -487,21 +487,21 @@ help: Borrow the value with & instead of transferring ownership, or create a new
 Выход за границы в обоих бэкендах завершает процесс с кодом 1 и сообщением
 `gors: index N out of bounds (len M)` в stderr.
 
-### Архивы 1.0.0-alpha.2
+### Архивы 1.0.0-alpha.3
 
 ```sh
 go run ./tools/package -out dist
 ```
 
 Создаются архивы для Linux amd64 и Windows amd64 с бинарником `gors`,
-автономным `gors-bootstrap.c`, примерами и документацией. Контрольные суммы
-записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.2`.
+проверенным `gors-bootstrap.c`, исходниками bootstrap, примерами и документацией. Контрольные суммы
+записываются в `SHA256SUMS`. `gors --version` печатает `GoRs 1.0.0-alpha.3`.
 
-Из распакованного архива bootstrap-компилятор можно собрать с GCC:
+Из распакованного архива GCC может собрать bootstrap-компилятор без Go.
+Следующая команда повторяет генерацию C, а `cmp` сверяет результат:
 
 ```sh
 gcc -std=c23 -O2 gors-bootstrap.c -o gors-bootstrap
-./gors-bootstrap emit examples/wc.gors -o wc.c
-gcc -std=c23 -O2 wc.c -o wc
-./wc README.md
+./gors-bootstrap emit bootstrap/cgen/main.gors -o rebuilt.c
+cmp gors-bootstrap.c rebuilt.c
 ```

@@ -1,7 +1,7 @@
 # GoRs
 
 [![CI](https://github.com/rxzsu/Gors/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rxzsu/Gors/actions/workflows/ci.yml)
-[![Prerelease v1.0.0-alpha.2](https://img.shields.io/badge/release-v1.0.0--alpha.2-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.2)
+[![Prerelease v1.0.0-alpha.3](https://img.shields.io/badge/release-v1.0.0--alpha.3-df9f1d)](https://github.com/rxzsu/Gors/releases/tag/v1.0.0-alpha.3)
 
 GoRs is an experimental compiled language that pairs a small, Go-inspired syntax with Rust-inspired ownership and borrowing. It targets C23 and Go. The bootstrap compiler, written in GoRs, can now compile its own sources through C23 and reproduce the same generated C in the next stage.
 
@@ -13,10 +13,10 @@ Download and extract the archive for your platform. To compile programs with the
 
 | Platform | Download | Run from the extracted directory |
 | --- | --- | --- |
-| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
-| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/gors-1.0.0-alpha.2-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
+| Windows amd64 | [ZIP](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-windows-amd64.zip) | `.\gors.exe run examples/hello.gors --backend c` |
+| Linux amd64 | [TAR.GZ](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/gors-1.0.0-alpha.3-linux-amd64.tar.gz) | `./gors run examples/hello.gors --backend c` |
 
-The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.2/SHA256SUMS)
+The program prints `hello from GoRs`. [SHA-256 checksums](https://github.com/rxzsu/Gors/releases/download/v1.0.0-alpha.3/SHA256SUMS)
 
 ## What the language looks like
 
