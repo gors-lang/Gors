@@ -60,6 +60,7 @@ fn main() {
 | Example | What it shows |
 | --- | --- |
 | [Methods](examples/methods.gors) | Shared and mutable receivers |
+| [Point by value](examples/point.gors) | Struct literals and field reads in the bootstrap compiler |
 | [Modules](examples/modules/main.gors) | File imports and public declarations |
 | [Option](examples/option.gors) | Values that can be present (`Some`) or absent (`None`) |
 | [Result](examples/result.gors) | Error handling and early return with `?` |
@@ -71,9 +72,9 @@ fn main() {
 | Compiler | Current scope |
 | --- | --- |
 | `gors`, written in Go | C23 and Go backends, file modules, structs and methods, `Option`, `Result`, and ownership checks |
-| `gors-bootstrap`, written in GoRs | A lexer, parser, type checker, and C23 emitter for single-file programs. It supports integers, booleans, strings, slices, functions, loops, `Result`, `match`, and file I/O |
+| `gors-bootstrap`, written in GoRs | A lexer, parser, type checker, and C23 emitter for single-file programs. It supports integers, booleans, strings, slices, structs by value, functions, loops, `Result`, `match`, and file I/O |
 
-The bootstrap compiler can build `fib.gors`, `echo.gors`, and `wc.gors` with GCC. Compiling the bootstrap compiler's own GoRs sources still requires the main compiler. Adding structs, methods, and file modules to the bootstrap compiler is the next milestone. [Bootstrap sources](bootstrap/)
+The bootstrap compiler can build `fib.gors`, `echo.gors`, `wc.gors`, and `point.gors` with GCC. Struct support includes literals, nested struct fields, field mutation, and passing and returning structs by value. Methods, references, file modules, slices of structs, and structs as `Result` payloads are outside the current bootstrap subset. Compiling the bootstrap compiler's own GoRs sources still requires the main compiler. [Bootstrap sources](bootstrap/)
 
 ## Build and run the bootstrap compiler
 

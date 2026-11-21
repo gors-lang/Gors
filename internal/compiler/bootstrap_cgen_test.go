@@ -32,6 +32,20 @@ func TestBootstrapCEmitter(t *testing.T) {
 	}{
 		{"fib", filepath.Join("..", "..", "examples", "fib.gors"), "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n", "", 0, nil},
 		{"hello", filepath.Join("..", "..", "examples", "hello.gors"), "hello from GoRs\n", "", 0, nil},
+		{"Point by value", filepath.Join("..", "..", "examples", "point.gors"), "25\n", "", 0, nil},
+		{"nested structs and mutable fields", write("nested structs", `
+			struct Outer { inner: Inner, values: []int }
+			struct Inner { number: int, text: string }
+			fn make() -> Outer {
+				return Outer { values: [1, 2], inner: Inner { text: "old", number: 3 } }
+			}
+			fn main() {
+				let mut x = make()
+				x.inner.number = 9
+				x.inner.text = "new"
+				x.values[0] = 7
+				println(x.inner.number, x.inner.text, x.values[0])
+			}`), "9 new 7\n", "", 0, nil},
 		{"echo", filepath.Join("..", "..", "examples", "echo.gors"), "hello world --flag\n", "", 0, []string{"hello world", "--flag"}},
 		{"empty args", filepath.Join("..", "..", "examples", "echo.gors"), "\n", "", 0, nil},
 		{"slices example", filepath.Join("..", "..", "examples", "slices.gors"), "4\n10\n4\n40\n99\n", "", 0, nil},
@@ -125,6 +139,14 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"duplicate match arm", write("duplicate match arm", `fn main() { let x: Result<int, string> = Ok(1); match x { Ok(i) => println(i), Ok(j) => println(j) } }`), "duplicate Result match arm"},
 		{"mismatched arms", write("mismatched arms", `fn main() { let x: Result<int, string> = Ok(1); let y = match x { Ok(i) => i, Err(e) => e } }`), "match arms have different types"},
 		{"invalid read path type", write("invalid read path type", `fn main() { let x = read_bytes(1) }`), "read_bytes expects a string path"},
+		{"duplicate struct names", write("duplicate struct names", `struct A {} struct A {} fn main() {}`), "duplicate declaration name"},
+		{"duplicate field declaration", write("duplicate field declaration", `struct A { x: int, x: bool } fn main() {}`), "duplicate struct field declaration"},
+		{"recursive struct layout", write("recursive struct layout", `struct A { b: B } struct B { a: A } fn main() {}`), "recursive struct layout"},
+		{"missing field", write("missing field", `struct A { x: int } fn main() { let a = A {} }`), "missing struct field initializer"},
+		{"unknown field", write("unknown field", `struct A { x: int } fn main() { let a = A { y: 1 } }`), "unknown struct field"},
+		{"duplicate initializer", write("duplicate initializer", `struct A { x: int } fn main() { let a = A { x: 1, x: 2 } }`), "duplicate struct field initializer"},
+		{"wrong field type", write("wrong field type", `struct A { x: int } fn main() { let a = A { x: false } }`), "struct field type mismatch"},
+		{"immutable field assignment", write("immutable field assignment", `struct A { x: int } fn main() { let a = A { x: 1 }; a.x = 2 }`), "assignment to immutable name"},
 	}
 	wc := filepath.Join("..", "..", "examples", "wc.gors")
 	empty, binary, missing := filepath.Join(dir, "empty.txt"), filepath.Join(dir, "binary input.bin"), filepath.Join(dir, "missing.txt")

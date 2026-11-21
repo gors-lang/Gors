@@ -127,6 +127,7 @@ fn base_type(typ: int) -> string {
 }
 
 fn type_name(program: &sema::Checked, typ: int, token: int) -> Result<string, imports::ParseError> {
+    if typ >= 10000 { return Ok("boot_struct_" + decimal(typ - 10000)) }
     if typ >= 1000 {
         if len(base_type(sema::result_variant_type(typ, 1))) != 0 &&
             len(base_type(sema::result_variant_type(typ, 2))) != 0 {
@@ -142,6 +143,24 @@ fn type_name(program: &sema::Checked, typ: int, token: int) -> Result<string, im
 fn ctype(program: &sema::Checked, token: int) -> Result<string, imports::ParseError> {
     let typ = program.type_at(token)?
     return type_name(program, typ, token)
+}
+
+fn emit_structs(out: &mut Output, program: &sema::Checked) -> Result<bool, imports::ParseError> {
+    for index in program.struct_order {
+        let header = &program.headers[index]
+        let tag = "boot_struct_" + decimal(index)
+        out.line("typedef struct {")
+        out.depth = out.depth + 1
+        if len(header.bindings) == 0 { out.line("unsigned char unused;") }
+        for field in header.bindings {
+            let typ = ctype(program, field.type_token)?
+            let name = symbol(program, field.name.start, field.name.end, "field_")
+            out.line(typ + " " + name + ";")
+        }
+        out.depth = out.depth - 1
+        out.line("} " + tag + ";")
+    }
+    return Ok(true)
 }
 
 fn emit_result_types(out: &mut Output) {
@@ -294,6 +313,12 @@ fn emit_expr(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
     }
     if node.kind == "group" { return emit_expr(out, program, node.children[0]) }
     if node.kind == "call" { return emit_call(out, program, id) }
+    if node.kind == "struct_literal" { return emit_struct_literal(out, program, id) }
+    if node.kind == "field" {
+        let base = emit_expr(out, program, node.children[0])?
+        let member = field_name(program, node.children[1])
+        return Ok(out.save("(" + base + ")." + member))
+    }
     if node.kind == "match_expression" { return emit_match(out, program, id) }
     if node.kind == "slice_literal" { return emit_slice_literal(out, program, id) }
     if node.kind == "index" || node.kind == "slice" {
@@ -316,6 +341,29 @@ fn emit_typed_expr(out: &mut Output, program: &sema::Checked, id: int, expected:
     if node.kind == "group" { return emit_typed_expr(out, program, node.children[0], expected + "") }
     if node.kind == "slice_literal" && len(node.children) == 0 { return Ok("(" + expected + "){0}") }
     return emit_expr(out, program, id)
+}
+
+fn field_name(program: &sema::Checked, id: int) -> string {
+    let tok = &program.input.tokens[program.tree.nodes[id].first]
+    return symbol(program, tok.start, tok.end, "field_")
+}
+
+fn emit_struct_literal(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let typ = type_name(program, program.expr_types[id], node.first)?
+    let mut value = "(" + typ + "){"
+    if len(node.children) == 1 { value = value + "0" }
+    let mut i = 1
+    while i < len(node.children) {
+        let init = &program.tree.nodes[node.children[i]]
+        let member = field_name(program, init.children[0])
+        let data_id = init.children[1]
+        let expected = type_name(program, program.expr_types[data_id], init.first)?
+        let data = emit_typed_expr(out, program, data_id, expected)?
+        value = value + "." + member + " = " + data + ", "
+        i = i + 1
+    }
+    return Ok(out.save(value + "}"))
 }
 
 fn emit_slice_literal(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
@@ -384,19 +432,26 @@ fn emit_for(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, 
     return Ok(true)
 }
 
-fn emit_assignment(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
-    let node = &program.tree.nodes[id]
-    let target = &program.tree.nodes[node.children[0]]
-    let mut lvalue = ""
+fn emit_place(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
+    let target = &program.tree.nodes[id]
+    if target.kind == "field" {
+        let base = emit_place(out, program, target.children[0])?
+        let member = field_name(program, target.children[1])
+        return Ok("(" + base + ")." + member)
+    }
     if target.kind == "index" {
-        let base = emit_expr(out, program, target.children[0])?
+        let base = emit_place(out, program, target.children[0])?
         let i = emit_expr(out, program, target.children[1])?
         let address = out.save("BOOT_INDEX(" + base + ", " + i + ")")
-        lvalue = "*" + address
-    } else {
-        let tok = &program.input.tokens[target.first]
-        lvalue = symbol(program, tok.start, tok.end, "v_")
+        return Ok("*" + address)
     }
+    let tok = &program.input.tokens[target.first]
+    return Ok(symbol(program, tok.start, tok.end, "v_"))
+}
+
+fn emit_assignment(out: &mut Output, program: &sema::Checked, id: int) -> Result<bool, imports::ParseError> {
+    let node = &program.tree.nodes[id]
+    let lvalue = emit_place(out, program, node.children[0])?
     let result = emit_typed_expr(out, program, node.children[1], "typeof(" + lvalue + ")")?
     out.line(lvalue + " = " + result + ";")
     return Ok(true)
@@ -531,17 +586,22 @@ pub fn emit(program: &sema::Checked) -> Result<[]string, imports::ParseError> {
     let mut out = Output { lines: runtime::prelude(), serial: 0, depth: 0, return_type_token: -1 }
     emit_result_types(&mut out)
     for line in runtime::files() { out.line(*line + "") }
+    let structs = emit_structs(&mut out, program)?
     out.line("")
-    for i, _ in program.headers {
+    for i, declaration in program.headers {
+        if declaration.kind != "fn" { continue }
         let prototype = signature(program, i)?
         out.line(prototype + ";")
     }
     out.line("")
+    let mut root = 0
     for j, header in program.headers {
+        if header.kind != "fn" { continue }
         out.return_type_token = header.return_type_token
         let definition = signature(program, j)?
         out.line(definition + " {")
-        let emitted = emit_body(&mut out, program, program.tree.roots[j])?
+        let emitted = emit_body(&mut out, program, program.tree.roots[root])?
+        root = root + 1
         out.line("")
     }
     let main_index = find_main(program)
@@ -564,7 +624,7 @@ pub fn emit(program: &sema::Checked) -> Result<[]string, imports::ParseError> {
 
 fn find_main(program: &sema::Checked) -> int {
     for i, header in program.headers {
-        if program.word(header.name.start, header.name.end, [109, 97, 105, 110]) { return i }
+        if header.kind == "fn" && program.word(header.name.start, header.name.end, [109, 97, 105, 110]) { return i }
     }
     return -1
 }

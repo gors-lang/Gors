@@ -900,7 +900,7 @@ func (g *gen) genStmt(s ast.Stmt) {
 			iterVal := g.expr(st.Iter)
 			g.line("%s* %s = %s;", sema.MonoName(sl), tmpPtr, iterVal)
 		} else if sema.IsPlace(st.Iter) {
-			iterVal := g.rawExpr(st.Iter)
+			iterVal := g.place(st.Iter)
 			g.line("%s* %s = &%s;", sema.MonoName(sl), tmpPtr, iterVal)
 		} else {
 			iterVal := g.expr(st.Iter)

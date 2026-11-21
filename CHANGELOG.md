@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The bootstrap compiler supports structs by value, including literals, nested
+  fields, field reads and writes, and function arguments and returns.
+- The main C backend can iterate over a slice field of an indexed element.
+
 ## 1.0.0-alpha.2
 
 - Added `write_text(path, text)` to both main backends and the bootstrap compiler. `gors-bootstrap emit <file> -o <output.c>` writes generated C directly to a file.

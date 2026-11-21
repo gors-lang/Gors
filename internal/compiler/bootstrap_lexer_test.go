@@ -399,7 +399,7 @@ func TestBootstrapSemanticChecker(t *testing.T) {
 		{"loop control", "fn main() { break }", "loop control outside a loop"},
 		{"bad index", "fn main() { let xs = [1]; println(xs[false]) }", "index or bound must be int"},
 		{"mixed slice", "fn main() { let xs = [1, true] }", "slice element type mismatch"},
-		{"unsupported struct", "struct Box { value: int } fn main() {}", "structs and methods are outside"},
+		{"unsupported method", "struct Box { value: int } fn (b: Box) get() -> int { return b.value } fn main() {}", "methods are outside"},
 		{"unsupported import", `import a "a.gors" fn main() {}`, "imports are outside"},
 	}
 	for _, tc := range cases {

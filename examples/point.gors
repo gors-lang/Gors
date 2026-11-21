@@ -1,0 +1,13 @@
+struct Point {
+    x: int,
+    y: int,
+}
+
+fn norm2(p: Point) -> int {
+    return p.x * p.x + p.y * p.y
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 }
+    println(norm2(p))
+}
