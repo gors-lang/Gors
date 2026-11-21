@@ -131,8 +131,12 @@ func (c *checker) declareFuncs(prog *ast.Program) {
 				c.errf("E211", fn.At, "ambiguous lifetime: function has %d input references; lifetime annotations not supported", refCount)
 			}
 		}
-		if fn.Name == "main" && (len(sig.Params) != 0 || sig.Ret != VoidT) {
-			c.errf("E117", fn.At, "main must have no parameters and no return type")
+		if fn.Name == "main" {
+			validParams := len(sig.Params) == 0 ||
+				(len(sig.Params) == 1 && sameType(sig.Params[0], &Slice{Elem: String}))
+			if !validParams || (sig.Ret != VoidT && !sameType(sig.Ret, Int)) {
+				c.errf("E117", fn.At, "main must take no parameters or one []string parameter, and may only return int")
+			}
 		}
 		c.info.Funcs[fn.Name] = sig
 	}
@@ -1104,11 +1108,25 @@ func (c *checker) checkCall(ex *ast.Call) Type {
 	// Builtins.
 	if id, ok := ex.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print":
+		case "println", "print", "eprintln":
 			for _, a := range ex.Args {
 				c.checkExpr(a)
 			}
 			return VoidT
+		case "read_bytes":
+			if len(ex.Args) != 1 {
+				c.errf("E184", ex.At, "read_bytes takes exactly one path argument")
+				return nil
+			}
+			path := c.checkExpr(ex.Args[0])
+			if path == nil {
+				return nil
+			}
+			if !isString(path) {
+				c.errf("E184", ex.Args[0].Pos(), "read_bytes requires a string path, got %s", path.String())
+				return nil
+			}
+			return &ResultT{Ok: &Slice{Elem: Int}, Err: String}
 		case "push":
 			if len(ex.Args) != 2 {
 				c.errf("E155", ex.At, "push takes exactly two arguments: push(&mut xs, value)")
@@ -1220,7 +1238,7 @@ func (c *checker) resolveMethod(field *ast.Field) (*FuncSig, *StructT) {
 
 func isBuiltin(name string) bool {
 	switch name {
-	case "println", "print", "len":
+	case "println", "print", "eprintln", "len", "read_bytes":
 		return true
 	}
 	return false

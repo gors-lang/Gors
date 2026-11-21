@@ -1,0 +1,30 @@
+import lexer "../lexer/lexer.gors"
+import parser "declarations.gors"
+
+fn print_headers(bytes: []int) -> int {
+    let lexed = lexer::scan(bytes)
+    match parser::parse_declarations(&lexed) {
+        Ok(decls) => {
+            for decl in decls {
+                println(decl.line, decl.col, decl.kind, decl.public, decl.name.start, decl.name.end, len(decl.bindings))
+            }
+            return 0
+        }
+        Err(issue) => {
+            eprintln(issue.line, issue.col, issue.message)
+            return 1
+        }
+    }
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: gors-headers <file>")
+        return 2
+    }
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => { return print_headers(bytes) }
+        Err(message) => { eprintln("gors-headers:", path, message); return 2 }
+    }
+}

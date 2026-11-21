@@ -1,0 +1,9 @@
+fn main(args: []string) {
+    for i, word in args {
+        if i > 0 {
+            print(" ")
+        }
+        print(word)
+    }
+    println("")
+}

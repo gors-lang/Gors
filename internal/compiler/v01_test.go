@@ -19,6 +19,7 @@ func TestV01Rejects(t *testing.T) {
 		{"match move merge", `fn take(s:string){} fn main(){let s="x";match Some(1){Some(v)=>{take(s)} None=>{}};println(s)}`, "E200"},
 		{"return local reference", `fn bad()->&int {let x=1;return &x} fn main(){}`, "E211"},
 		{"reference field", `struct Bad {r:&int} fn main(){}`, "E211"},
+		{"move through dereference", `fn take(xs: &[]int) -> []int { return *xs } fn main() {}`, "E208"},
 		{"reference slice", `fn main(){let x=1;let refs=[&x]}`, "E211"},
 		{"reference option", `fn main(){let x=1;println(Some(&x))}`, "E211"},
 		{"mutable alias", `fn main(){let mut x=1;let a=&mut x;let b=a;println(b)}`, "E209"},

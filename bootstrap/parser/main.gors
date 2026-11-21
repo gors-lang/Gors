@@ -1,0 +1,30 @@
+import lexer "../lexer/lexer.gors"
+import parser "imports.gors"
+
+fn print_imports(bytes: []int) -> int {
+    let lexed = lexer::scan(bytes)
+    match parser::parse_imports(&lexed) {
+        Ok(prefix) => {
+            for decl in prefix.imports {
+                println(decl.line, decl.col, decl.alias_start, decl.alias_end, decl.path_start, decl.path_end)
+            }
+            return 0
+        }
+        Err(issue) => {
+            eprintln(issue.line, issue.col, issue.message)
+            return 1
+        }
+    }
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: gors-imports <file>")
+        return 2
+    }
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => { return print_imports(bytes) }
+        Err(message) => { eprintln("gors-imports:", path, message); return 2 }
+    }
+}

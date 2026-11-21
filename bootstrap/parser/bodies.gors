@@ -1,0 +1,332 @@
+import lexer "../lexer/lexer.gors"
+import decl "declarations.gors"
+import imports "imports.gors"
+
+// Token spans are half-open. Children are node indices in the same tree.
+// An omitted positional child (such as a slice bound) is -1.
+pub struct Node {
+    kind: string,
+    first: int,
+    next: int,
+    children: []int,
+}
+
+pub struct Bodies {
+    nodes: []Node,
+    roots: []int,
+}
+
+struct Parsed {
+    node: int,
+    next: int,
+}
+
+fn add(nodes: &mut []Node, kind: string, first: int, next: int, children: []int) -> Parsed {
+    let node = len(*nodes)
+    push(nodes, Node { kind: kind, first: first, next: next, children: children })
+    return Parsed { node: node, next: next }
+}
+
+fn name(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let next = decl::expect(input, start, "IDENT")?
+    return Ok(add(nodes, "name", start, next, []))
+}
+
+fn precedence(kind: &string) -> int {
+    if *kind == "||" { return 1 }
+    if *kind == "&&" { return 2 }
+    if *kind == "==" || *kind == "!=" { return 3 }
+    if *kind == "<" || *kind == "<=" || *kind == ">" || *kind == ">=" { return 4 }
+    if *kind == "+" || *kind == "-" { return 5 }
+    if *kind == "*" || *kind == "/" || *kind == "%" { return 6 }
+    return 0
+}
+
+fn expression(input: &lexer::Lexed, nodes: &mut []Node, start: int, minimum: int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    let mut left = unary(input, nodes, start, structs)?
+    while left.next < len(input.tokens) {
+        let op = &input.tokens[left.next].kind
+        let rank = precedence(op)
+        if rank < minimum { break }
+        let right = expression(input, nodes, left.next + 1, rank + 1, structs)?
+        left = add(nodes, "binary:" + *op, start, right.next, [left.node, right.node])
+    }
+    return Ok(left)
+}
+
+fn unary(input: &lexer::Lexed, nodes: &mut []Node, start: int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    if start < len(input.tokens) {
+        let op = &input.tokens[start].kind
+        if *op == "-" || *op == "!" || *op == "*" || *op == "&" {
+            let mutable = *op == "&" && decl::at(input, start + 1, "mut")
+            let mut next = start + 1
+            let mut kind = "unary:" + *op
+            if mutable {
+                next = next + 1
+                kind = "unary:&mut"
+            }
+            let operand = unary(input, nodes, next, structs)?
+            return Ok(add(nodes, kind, start, operand.next, [operand.node]))
+        }
+    }
+    return postfix(input, nodes, start, structs)
+}
+
+fn list(input: &lexer::Lexed, nodes: &mut []Node, open: int, close: string, kind: string, first: int, seed: []int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    let mut items = seed
+    let mut i = open + 1
+    while i < len(input.tokens) && input.tokens[i].kind != close {
+        let item = expression(input, nodes, i, 1, structs)?
+        push(&mut items, item.node)
+        i = item.next
+        if !decl::at(input, i, ",") { break }
+        i = i + 1
+    }
+    let next = decl::expect(input, i, close)?
+    return Ok(add(nodes, kind, first, next, items))
+}
+
+fn struct_literal(input: &lexer::Lexed, nodes: &mut []Node, start: int, named: &Parsed) -> Result<Parsed, imports::ParseError> {
+    let mut fields = [named.node]
+    let mut i = named.next + 1
+    while !decl::at(input, i, "}") {
+        let field = name(input, nodes, i)?
+        let value_start = decl::expect(input, field.next, ":")?
+        let value = expression(input, nodes, value_start, 1, true)?
+        let init = add(nodes, "initializer", i, value.next, [field.node, value.node])
+        push(&mut fields, init.node)
+        i = value.next
+        if !decl::at(input, i, ",") { break }
+        i = i + 1
+    }
+    let next = decl::expect(input, i, "}")?
+    return Ok(add(nodes, "struct_literal", start, next, fields))
+}
+
+fn primary(input: &lexer::Lexed, nodes: &mut []Node, start: int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    if start >= len(input.tokens) { return Err(decl::error_at(input, start, "expected expression")) }
+    let kind = &input.tokens[start].kind
+    if *kind == "INT" || *kind == "FLOAT" || *kind == "STRING" || *kind == "true" || *kind == "false" {
+        return Ok(add(nodes, *kind + "", start, start + 1, []))
+    }
+    if *kind == "IDENT" {
+        let mut next = start + 1
+        if decl::at(input, next, "::") { next = decl::expect(input, next + 1, "IDENT")? }
+        let named = add(nodes, "name", start, next, [])
+        if structs && decl::at(input, next, "{") { return struct_literal(input, nodes, start, &named) }
+        return Ok(named)
+    }
+    if *kind == "(" {
+        let inner = expression(input, nodes, start + 1, 1, structs)?
+        let next = decl::expect(input, inner.next, ")")?
+        return Ok(add(nodes, "group", start, next, [inner.node]))
+    }
+    if *kind == "[" { return list(input, nodes, start, "]", "slice_literal", start, [], structs) }
+    if *kind == "match" { return parse_match(input, nodes, start, structs, "match_expression") }
+    return Err(decl::error_at(input, start, "expected expression"))
+}
+
+fn subscript(input: &lexer::Lexed, nodes: &mut []Node, start: int, base: &Parsed, structs: bool) -> Result<Parsed, imports::ParseError> {
+    let mut i = base.next + 1
+    let mut low = -1
+    if !decl::at(input, i, ":") {
+        let first = expression(input, nodes, i, 1, structs)?
+        i = first.next
+        low = first.node
+    }
+    if !decl::at(input, i, ":") {
+        let next = decl::expect(input, i, "]")?
+        return Ok(add(nodes, "index", start, next, [base.node, low]))
+    }
+    i = i + 1
+    let mut high = -1
+    if !decl::at(input, i, "]") {
+        let last = expression(input, nodes, i, 1, structs)?
+        i = last.next
+        high = last.node
+    }
+    let end = decl::expect(input, i, "]")?
+    return Ok(add(nodes, "slice", start, end, [base.node, low, high]))
+}
+
+fn postfix(input: &lexer::Lexed, nodes: &mut []Node, start: int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    let mut base = primary(input, nodes, start, structs)?
+    while base.next < len(input.tokens) {
+        let i = base.next
+        let kind = &input.tokens[i].kind
+        if *kind == "(" {
+            base = list(input, nodes, i, ")", "call", start, [base.node], structs)?
+        } else if *kind == "." {
+            let field = name(input, nodes, i + 1)?
+            base = add(nodes, "field", start, field.next, [base.node, field.node])
+        } else if *kind == "[" {
+            base = subscript(input, nodes, start, &base, structs)?
+        } else if *kind == "?" {
+            base = add(nodes, "try", start, i + 1, [base.node])
+        } else {
+            break
+        }
+    }
+    return Ok(base)
+}
+
+fn pattern(input: &lexer::Lexed, nodes: &mut []Node, start: int, binding_required: bool) -> Result<Parsed, imports::ParseError> {
+    let variant = name(input, nodes, start)?
+    if !binding_required && !decl::at(input, variant.next, "(") {
+        return Ok(add(nodes, "pattern", start, variant.next, [variant.node, -1]))
+    }
+    let open = decl::expect(input, variant.next, "(")?
+    let binding = name(input, nodes, open)?
+    let next = decl::expect(input, binding.next, ")")?
+    return Ok(add(nodes, "pattern", start, next, [variant.node, binding.node]))
+}
+
+fn match_arm(input: &lexer::Lexed, nodes: &mut []Node, start: int, structs: bool) -> Result<Parsed, imports::ParseError> {
+    let pat = pattern(input, nodes, start, false)?
+    let value_start = decl::expect(input, pat.next, "=>")?
+    if decl::at(input, value_start, "{") {
+        let body = block(input, nodes, value_start)?
+        return Ok(add(nodes, "arm", start, body.next, [pat.node, body.node]))
+    }
+    let value = expression(input, nodes, value_start, 1, structs)?
+    return Ok(add(nodes, "arm", start, value.next, [pat.node, value.node]))
+}
+
+fn parse_match(input: &lexer::Lexed, nodes: &mut []Node, start: int, structs: bool, kind: string) -> Result<Parsed, imports::ParseError> {
+    let subject = expression(input, nodes, start + 1, 1, false)?
+    let mut i = decl::expect(input, subject.next, "{")?
+    let mut children = [subject.node]
+    while !decl::at(input, i, "}") {
+        let arm = match_arm(input, nodes, i, structs)?
+        push(&mut children, arm.node)
+        i = arm.next
+        if decl::at(input, i, ",") { i = i + 1 }
+    }
+    return Ok(add(nodes, kind, start, i + 1, children))
+}
+
+fn let_stmt(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let mut i = start + 1
+    let mut kind = "let"
+    if decl::at(input, i, "mut") {
+        i = i + 1
+        kind = "let_mut"
+    }
+    let binding = name(input, nodes, i)?
+    i = binding.next
+    let mut type_node = -1
+    if decl::at(input, i, ":") {
+        let end = decl::parse_type(input, i + 1)?
+        let annotation = add(nodes, "type", i + 1, end, [])
+        type_node = annotation.node
+        i = end
+    }
+    let value_start = decl::expect(input, i, "=")?
+    let value = expression(input, nodes, value_start, 1, true)?
+    return Ok(add(nodes, kind, start, value.next, [binding.node, type_node, value.node]))
+}
+
+fn return_stmt(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let next = start + 1
+    if next >= len(input.tokens) || input.tokens[next].line != input.tokens[start].line ||
+        decl::at(input, next, "}") || decl::at(input, next, ";") || decl::at(input, next, "EOF") {
+        return Ok(add(nodes, "return", start, next, []))
+    }
+    let value = expression(input, nodes, next, 1, true)?
+    return Ok(add(nodes, "return", start, value.next, [value.node]))
+}
+
+fn else_branch(input: &lexer::Lexed, nodes: &mut []Node, i: int) -> Result<Parsed, imports::ParseError> {
+    if !decl::at(input, i, "else") { return Ok(Parsed { node: -1, next: i }) }
+    if decl::at(input, i + 1, "if") { return if_stmt(input, nodes, i + 1) }
+    return block(input, nodes, i + 1)
+}
+
+fn if_stmt(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let mut i = start + 1
+    let mut pat = -1
+    let mut kind = "if"
+    if decl::at(input, i, "let") {
+        let binding = pattern(input, nodes, i + 1, true)?
+        pat = binding.node
+        i = decl::expect(input, binding.next, "=")?
+        kind = "if_let"
+    }
+    let cond = expression(input, nodes, i, 1, false)?
+    let body = block(input, nodes, cond.next)?
+    let otherwise = else_branch(input, nodes, body.next)?
+    return Ok(add(nodes, kind, start, otherwise.next, [pat, cond.node, body.node, otherwise.node]))
+}
+
+fn for_stmt(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let first = name(input, nodes, start + 1)?
+    let mut i = first.next
+    let mut key = -1
+    let mut value = first.node
+    if decl::at(input, i, ",") {
+        let second = name(input, nodes, i + 1)?
+        key = first.node
+        value = second.node
+        i = second.next
+    }
+    let iter_start = decl::expect(input, i, "in")?
+    let iter = expression(input, nodes, iter_start, 1, false)?
+    let body = block(input, nodes, iter.next)?
+    return Ok(add(nodes, "for", start, body.next, [key, value, iter.node, body.node]))
+}
+
+fn statement(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let kind = &input.tokens[start].kind
+    if *kind == "let" { return let_stmt(input, nodes, start) }
+    if *kind == "return" { return return_stmt(input, nodes, start) }
+    if *kind == "if" { return if_stmt(input, nodes, start) }
+    if *kind == "for" { return for_stmt(input, nodes, start) }
+    if *kind == "match" { return parse_match(input, nodes, start, true, "match_statement") }
+    if *kind == "while" {
+        let condition = expression(input, nodes, start + 1, 1, false)?
+        let body = block(input, nodes, condition.next)?
+        return Ok(add(nodes, "while", start, body.next, [condition.node, body.node]))
+    }
+    if *kind == "break" || *kind == "continue" { return Ok(add(nodes, *kind + "", start, start + 1, [])) }
+    if *kind == "{" { return block(input, nodes, start) }
+    let left = expression(input, nodes, start, 1, true)?
+    if decl::at(input, left.next, "=") {
+        let right = expression(input, nodes, left.next + 1, 1, true)?
+        return Ok(add(nodes, "assign", start, right.next, [left.node, right.node]))
+    }
+    return Ok(add(nodes, "expr_stmt", start, left.next, [left.node]))
+}
+
+fn block(input: &lexer::Lexed, nodes: &mut []Node, start: int) -> Result<Parsed, imports::ParseError> {
+    let mut i = decl::expect(input, start, "{")?
+    let mut statements: []int = []
+    while i < len(input.tokens) && !decl::at(input, i, "}") && !decl::at(input, i, "EOF") {
+        if decl::at(input, i, ";") {
+            i = i + 1
+        } else {
+            let child = statement(input, nodes, i)?
+            push(&mut statements, child.node)
+            i = child.next
+        }
+    }
+    let next = decl::expect(input, i, "}")?
+    return Ok(add(nodes, "block", start, next, statements))
+}
+
+// Roots are in declaration order, one per function or method.
+pub fn parse_bodies(input: &lexer::Lexed) -> Result<Bodies, imports::ParseError> {
+    let headers = decl::parse_declarations(input)?
+    return parse_with_headers(input, &headers)
+}
+
+pub fn parse_with_headers(input: &lexer::Lexed, headers: &[]decl::Declaration) -> Result<Bodies, imports::ParseError> {
+    let mut nodes: []Node = []
+    let mut roots: []int = []
+    for header in headers {
+        if header.body_token >= 0 {
+            let body = block(input, &mut nodes, header.body_token)?
+            push(&mut roots, body.node)
+        }
+    }
+    return Ok(Bodies { nodes: nodes, roots: roots })
+}

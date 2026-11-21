@@ -685,6 +685,9 @@ func (b *borrowChecker) checkExpr(e ast.Expr, moveCtx bool) {
 
 	case *ast.Unary:
 		b.checkExpr(ex.X, false)
+		if ex.Op == "*" && moveCtx && !IsCopy(b.typeOf(ex)) {
+			b.errf("E208", ex.At, "cannot move out of a borrowed value")
+		}
 
 	case *ast.Binary:
 		saved := b.callEnd
@@ -813,7 +816,7 @@ func (b *borrowChecker) checkCall(c *ast.Call) {
 	}
 	if id, ok := c.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print", "len":
+		case "println", "print", "eprintln", "len", "read_bytes":
 			for _, a := range c.Args {
 				b.checkExpr(a, false)
 				b.borrowRead(a)

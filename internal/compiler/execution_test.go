@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +18,11 @@ import (
 // Each case is compiled and executed independently by both toolchains. Expected
 // output prevents two equally broken backends from validating one another.
 func TestBackendExecution(t *testing.T) {
-	cases := []struct {
+	type executionCase struct {
 		name, src, want string
 		fails           bool
-	}{
+	}
+	cases := []executionCase{
 		{"temporaries", `fn text() -> string { return "hello" }
  fn strings() -> []string { return ["a", "bb"] }
  fn main() { println(text()); println(len(text())); println(text() == "hello"); println(text() + text()); println(len(strings())); text(); strings() }`, "hello\n5\ntrue\nhellohello\n2\n", false},
@@ -224,6 +226,27 @@ fn main() {
 		{"slice past length", `fn main() { let xs = [1, 2]; println(len(xs[:3])) }`, "gors: slice bounds out of range [0:3] (len 2)\n", true},
 		{"string slice bounds", `fn main() { println("ab"[0:3]) }`, "gors: slice bounds out of range [0:3] (len 2)\n", true},
 	}
+	fixture := filepath.Join(t.TempDir(), "binary input")
+	if err := os.WriteFile(fixture, []byte{0, 13, 10, 255}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := strconv.Quote(filepath.ToSlash(fixture))
+	missing := strconv.Quote(filepath.ToSlash(fixture + ".missing"))
+	cases = append(cases,
+		executionCase{"binary file", `fn main() -> int {
+			let path = ` + path + `
+			match read_bytes(path) {
+				Ok(bytes) => { println(len(bytes), bytes[0], bytes[1], bytes[2], bytes[3]); return 0 }
+				Err(msg) => { eprintln(path, msg); return 1 }
+			}
+		}`, "4 0 13 10 255\n", false},
+		executionCase{"missing file", `fn main() -> int {
+			match read_bytes(` + missing + `) {
+				Ok(_) => { return 0 }
+				Err(msg) => { eprintln(msg); return 1 }
+			}
+		}`, "could not read file\n", true},
+	)
 	for _, ex := range []struct{ name, want string }{
 		{"hello", "hello from GoRs\n"}, {"structs", "25\n4\n5\n"}, {"methods", "25\n4\n5\n"},
 		{"option", "10\nnone\n"}, {"result", "2\nempty input\n"}, {"slices", "4\n10\n4\n40\n99\n"},
@@ -233,10 +256,7 @@ fn main() {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cases = append(cases, struct {
-			name, src, want string
-			fails           bool
-		}{"example " + ex.name, string(src), ex.want, false})
+		cases = append(cases, executionCase{"example " + ex.name, string(src), ex.want, false})
 	}
 
 	modules := t.TempDir()
@@ -249,16 +269,19 @@ fn main() {
 		"b.gors": `import common "common.gors" pub struct Box{s:string}
       pub fn make()->Box{return Box{s:common::text()+"2"}}
       pub fn(b:&Box)label()->string{return b.s+""}`,
-		"common.gors": `pub fn text()->string{return "shared"}`,
+		"common.gors": `pub fn text()->string{return "shared"}
+      pub fn numbers()->[]int{return [4,7,8]}
+      pub fn start()->int{return 1}`,
+		"loop.gors": `import common "common.gors"
+      fn combine(index:int,value:int)->int{return index+value}
+      fn main(){for index,value in common::numbers()[common::start():] {println(combine(index,value))}}`,
 	} {
 		if err := os.WriteFile(filepath.Join(modules, name), []byte(source), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cases = append(cases, struct {
-		name, src, want string
-		fails           bool
-	}{"module namespaces and diamond imports", "@file:" + filepath.Join(modules, "main.gors"), "shared\nshared2\n", false})
+	cases = append(cases, executionCase{"module namespaces and diamond imports", "@file:" + filepath.Join(modules, "main.gors"), "shared\nshared2\n", false})
+	cases = append(cases, executionCase{"module names in loops and slice bounds", "@file:" + filepath.Join(modules, "loop.gors"), "7\n9\n", false})
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,24 @@
+import lexer "../lexer/lexer.gors"
+import sema "checker.gors"
+
+fn check_file(bytes: []int) -> int {
+    match sema::check(lexer::scan(bytes)) {
+        Ok(_) => { return 0 }
+        Err(issue) => {
+            eprintln(issue.line, issue.col, issue.message)
+            return 1
+        }
+    }
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: gors-check <file>")
+        return 2
+    }
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => { return check_file(bytes) }
+        Err(issue) => { eprintln("gors-check:", path, issue); return 2 }
+    }
+}

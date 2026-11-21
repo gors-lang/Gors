@@ -1,0 +1,42 @@
+import lexer "../lexer/lexer.gors"
+import parser "bodies.gors"
+
+fn print_tree(bytes: []int) -> int {
+    let input = lexer::scan(bytes)
+    match parser::parse_bodies(&input) {
+        Ok(tree) => {
+            for index, node in tree.nodes {
+                print(index)
+                print(" ")
+                print(node.kind)
+                print(" ")
+                print(node.first)
+                print(" ")
+                print(node.next)
+                for child in node.children {
+                    print(" ")
+                    print(child)
+                }
+                println("")
+            }
+            for root in tree.roots { println("root", root) }
+            return 0
+        }
+        Err(issue) => {
+            eprintln(issue.line, issue.col, issue.message)
+            return 1
+        }
+    }
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: gors-tree <file>")
+        return 2
+    }
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => { return print_tree(bytes) }
+        Err(message) => { eprintln("gors-tree:", path, message); return 2 }
+    }
+}

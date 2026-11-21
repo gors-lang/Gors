@@ -184,6 +184,33 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
 			g.genSlicePush(sl)
 		}
 	}
+	for _, t := range mono {
+		if sema.MonoName(t) == "Result_Slice_int64_str" {
+			g.out.WriteString(`[[maybe_unused]] static Result_Slice_int64_str gors_read_bytes(const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        return (Result_Slice_int64_str){ .err = gors_str_new("could not read file") };
+    }
+    Slice_int64 bytes = {0};
+    unsigned char buffer[4096];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), file)) != 0) {
+        for (size_t i = 0; i < n; i++) {
+            Slice_int64_push(&bytes, buffer[i]);
+        }
+    }
+    bool failed = ferror(file) != 0;
+    fclose(file);
+    if (failed) {
+        Slice_int64_drop(&bytes);
+        return (Result_Slice_int64_str){ .err = gors_str_new("could not read file") };
+    }
+    return (Result_Slice_int64_str){ .ok = true, .val = bytes };
+}
+`)
+			break
+		}
+	}
 	g.out.WriteString("\n")
 
 	// 4. Function prototypes and bodies.
@@ -582,8 +609,7 @@ func (g *gen) genSlicePush(sl *sema.Slice) {
 	g.line("if (s->len == s->cap) {")
 	g.ind++
 	g.line("int64_t nc = s->cap ? s->cap * 2 : 4;")
-	g.line("%s* nd = (%s*)realloc(s->data, (size_t)nc * sizeof(%s));", elem, elem, elem)
-	g.line("if (!nd) gors_oom();")
+	g.line("%s* nd = (%s*)gors_realloc(s->data, (size_t)nc * sizeof(%s));", elem, elem, elem)
 	g.line("s->data = nd;")
 	g.line("s->cap = nc;")
 	g.ind--
@@ -730,18 +756,35 @@ func (g *gen) genEntry(prog *ast.Program) {
 		return
 	}
 	g.entry = true
-	g.retType = sema.VoidT
-	g.line("int main() {")
+	g.retType = g.info.Funcs["main"].Ret
+	hasArgs := len(mainFn.Params) == 1 && mainFn.Params[0].Name != "_"
+	if hasArgs {
+		g.line("int main(int argc, char **argv) {")
+	} else {
+		g.line("int main() {")
+	}
 	g.ind++
 	g.pushScope()
+	if hasArgs {
+		name := parameterName(mainFn.Params[0].Name, 0)
+		typ := g.info.Funcs["main"].Params[0]
+		slice := sema.MonoName(typ)
+		g.line("%s %s = {0};", slice, name)
+		g.line("for (int i = 1; i < argc; i++) {")
+		g.ind++
+		g.line("%s_push(&%s, gors_str_new(argv[i]));", slice, name)
+		g.ind--
+		g.line("}")
+		g.declareOwned(name, typ)
+	}
 	for _, s := range mainFn.Body.Stmts {
 		g.genStmt(s)
 	}
 	if !blockTerminates(mainFn.Body.Stmts) {
 		g.dropScope()
+		g.line("return 0;")
 	}
 	g.popScope()
-	g.line("return 0;")
 	g.ind--
 	g.line("}")
 }
@@ -931,6 +974,8 @@ func (g *gen) genReturn(st *ast.ReturnStmt) {
 			} else {
 				g.line("return;")
 			}
+		} else if g.entry {
+			g.line("return (int)((uint64_t)%s & 255);", ret)
 		} else {
 			g.line("return %s;", ret)
 		}
@@ -1238,9 +1283,14 @@ func (g *gen) expr(e ast.Expr) string {
 	}()
 	t := g.info.ExprTypes[e]
 	fresh := false
-	switch e.(type) {
+	switch ex := e.(type) {
 	case *ast.Ident, *ast.Field, *ast.Index, *ast.MatchExpr:
 		return value
+	case *ast.Unary:
+		if ex.Op == "*" {
+			return value
+		}
+		fresh = ownsValue(t)
 	case *ast.Call:
 		fresh = !g.isVoidCall(e)
 	default:
@@ -1485,9 +1535,13 @@ func (g *gen) call(ex *ast.Call) string {
 			}
 			return "(" + sema.MonoName(rt) + "){ .err = " + g.args(ex.Args) + " }"
 		case "println":
-			return g.printCall(ex.Args, true)
+			return g.printCall(ex.Args, true, false)
 		case "print":
-			return g.printCall(ex.Args, false)
+			return g.printCall(ex.Args, false, false)
+		case "eprintln":
+			return g.printCall(ex.Args, true, true)
+		case "read_bytes":
+			return "gors_read_bytes(" + g.strOperand(ex.Args[0]) + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {
@@ -1635,7 +1689,7 @@ func (g *gen) args(args []ast.Expr) string {
 	return strings.Join(parts, ", ")
 }
 
-func (g *gen) printCall(args []ast.Expr, newline bool) string {
+func (g *gen) printCall(args []ast.Expr, newline, stderr bool) string {
 	var fmts []string
 	var vals []string
 	for _, a := range args {
@@ -1676,10 +1730,14 @@ func (g *gen) printCall(args []ast.Expr, newline bool) string {
 	if newline {
 		format += "\n"
 	}
-	if len(vals) == 0 {
-		return "printf(" + cQuote(format) + ")"
+	call := "printf(" + cQuote(format)
+	if stderr {
+		call = "fprintf(stderr, " + cQuote(format)
 	}
-	return "printf(" + cQuote(format) + ", " + strings.Join(vals, ", ") + ")"
+	if len(vals) != 0 {
+		call += ", " + strings.Join(vals, ", ")
+	}
+	return call + ")"
 }
 
 func (g *gen) isVoidCall(e ast.Expr) bool {
@@ -1704,7 +1762,7 @@ func (g *gen) isVoidCall(e ast.Expr) bool {
 	}
 	if id, ok := call.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print", "push":
+		case "println", "print", "eprintln", "push":
 			return true
 		}
 		if sig, ok := g.info.Funcs[id.Name]; ok {

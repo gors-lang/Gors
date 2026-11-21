@@ -206,7 +206,7 @@ func (m *module) resolve() error {
 		}
 		var expr func(ast.Expr)
 		var stmt func(ast.Stmt)
-		var block func(*ast.Block, string)
+		var block func(*ast.Block, ...string)
 		expr = func(e ast.Expr) {
 			switch e := e.(type) {
 			case *ast.Ident:
@@ -225,6 +225,10 @@ func (m *module) resolve() error {
 			case *ast.Index:
 				expr(e.X)
 				expr(e.Idx)
+			case *ast.SliceExpr:
+				expr(e.X)
+				expr(e.Low)
+				expr(e.High)
 			case *ast.TryExpr:
 				expr(e.X)
 			case *ast.Call:
@@ -260,10 +264,12 @@ func (m *module) resolve() error {
 				}
 			}
 		}
-		block = func(b *ast.Block, binding string) {
+		block = func(b *ast.Block, bindings ...string) {
 			scopes = append(scopes, map[string]bool{})
-			if binding != "" {
-				scopes[len(scopes)-1][binding] = true
+			for _, binding := range bindings {
+				if binding != "" {
+					scopes[len(scopes)-1][binding] = true
+				}
 			}
 			for _, s := range b.Stmts {
 				stmt(s)
@@ -289,7 +295,7 @@ func (m *module) resolve() error {
 				}
 			case *ast.IfStmt:
 				expr(s.Cond)
-				block(s.Then, "")
+				block(s.Then)
 				if s.Else != nil {
 					stmt(s.Else)
 				}
@@ -301,17 +307,20 @@ func (m *module) resolve() error {
 				}
 			case *ast.WhileStmt:
 				expr(s.Cond)
-				block(s.Body, "")
+				block(s.Body)
+			case *ast.ForStmt:
+				expr(s.Iter)
+				block(s.Body, s.Key, s.Value)
 			case *ast.MatchStmt:
 				expr(s.Value)
 				for _, a := range s.Arms {
 					block(a.Body, a.Name)
 				}
 			case *ast.Block:
-				block(s, "")
+				block(s)
 			}
 		}
-		block(fn.Body, "")
+		block(fn.Body)
 	}
 	return problem
 }

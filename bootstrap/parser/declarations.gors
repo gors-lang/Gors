@@ -1,0 +1,190 @@
+import lexer "../lexer/lexer.gors"
+import imports "imports.gors"
+
+pub struct Span {
+    start: int,
+    end: int,
+}
+
+pub struct Binding {
+    name: Span,
+    type_span: Span,
+    type_token: int,
+}
+
+pub struct Declaration {
+    kind: string,
+    public: bool,
+    line: int,
+    col: int,
+    name: Span,
+    bindings: []Binding,
+    receiver: Option<Binding>,
+    method: bool,
+    return_type: Option<Span>,
+    return_type_token: int,
+    body: Option<Span>,
+    body_token: int,
+    next_token: int,
+}
+
+pub fn at(input: &lexer::Lexed, i: int, kind: string) -> bool {
+    return i < len(input.tokens) && input.tokens[i].kind == kind
+}
+
+pub fn error_at(input: &lexer::Lexed, i: int, message: string) -> imports::ParseError {
+    let mut index = len(input.tokens) - 1
+    if i < index { index = i }
+    return imports::ParseError {
+        line: input.tokens[index].line, col: input.tokens[index].col, message: message,
+    }
+}
+
+pub fn expect(input: &lexer::Lexed, i: int, kind: string) -> Result<int, imports::ParseError> {
+    if i < len(input.tokens) && input.tokens[i].kind == kind { return Ok(i + 1) }
+    return Err(error_at(input, i, "expected " + kind))
+}
+
+fn span(input: &lexer::Lexed, first: int, next: int) -> Span {
+    return Span { start: input.tokens[first].start, end: input.tokens[next - 1].end }
+}
+
+pub fn parse_type(input: &lexer::Lexed, start: int) -> Result<int, imports::ParseError> {
+    let mut i = start
+    while at(input, i, "&") || at(input, i, "[") {
+        if at(input, i, "&") {
+            i = i + 1
+            if at(input, i, "mut") { i = i + 1 }
+        } else {
+            i = expect(input, i + 1, "]")?
+        }
+    }
+    if !at(input, i, "IDENT") { return Err(error_at(input, i, "expected a type")) }
+    i = i + 1
+    if at(input, i, "::") { i = expect(input, i + 1, "IDENT")? }
+    if at(input, i, "<") {
+        i = parse_type(input, i + 1)?
+        while at(input, i, ",") { i = parse_type(input, i + 1)? }
+        i = expect(input, i, ">")?
+    }
+    return Ok(i)
+}
+
+struct ParsedBinding {
+    binding: Binding,
+    next_token: int,
+}
+
+fn parse_binding(input: &lexer::Lexed, start: int) -> Result<ParsedBinding, imports::ParseError> {
+    let colon = expect(input, start, "IDENT")?
+    let type_start = expect(input, colon, ":")?
+    let next = parse_type(input, type_start)?
+    return Ok(ParsedBinding {
+        binding: Binding {
+            name: span(input, start, colon), type_span: span(input, type_start, next), type_token: type_start,
+        },
+        next_token: next,
+    })
+}
+
+struct BindingList {
+    bindings: []Binding,
+    next_token: int,
+}
+
+fn parse_bindings(input: &lexer::Lexed, start: int, close: string) -> Result<BindingList, imports::ParseError> {
+    let mut bindings: []Binding = []
+    let mut i = start
+    while i < len(input.tokens) && input.tokens[i].kind != close {
+        let parsed = parse_binding(input, i)?
+        i = parsed.next_token
+        push(&mut bindings, parsed.binding)
+        if !at(input, i, ",") { break }
+        i = i + 1
+    }
+    let next = expect(input, i, close)?
+    return Ok(BindingList { bindings: bindings, next_token: next })
+}
+
+fn skip_body(input: &lexer::Lexed, start: int) -> Result<int, imports::ParseError> {
+    let mut i = expect(input, start, "{")?
+    let mut depth = 1
+    while i < len(input.tokens) && !at(input, i, "EOF") {
+        if at(input, i, "{") { depth = depth + 1 }
+        if at(input, i, "}") {
+            depth = depth - 1
+            if depth == 0 { return Ok(i + 1) }
+        }
+        i = i + 1
+    }
+    return Err(error_at(input, i, "expected } to close function body"))
+}
+
+fn parse_struct(input: &lexer::Lexed, start: int, public: bool) -> Result<Declaration, imports::ParseError> {
+    let name = start + 1
+    let open = expect(input, name, "IDENT")?
+    let first = expect(input, open, "{")?
+    let fields = parse_bindings(input, first, "}")?
+    let next = fields.next_token
+    return Ok(Declaration {
+        kind: "struct", public: public, line: input.tokens[start].line, col: input.tokens[start].col,
+        name: span(input, name, open), bindings: fields.bindings,
+        receiver: None, method: false, return_type: None, return_type_token: -1,
+        body: None, body_token: -1, next_token: next,
+    })
+}
+
+fn parse_function(input: &lexer::Lexed, start: int, public: bool) -> Result<Declaration, imports::ParseError> {
+    let mut name = start + 1
+    let mut receiver: Option<Binding> = None
+    let method = at(input, name, "(")
+    if method {
+        let parsed = parse_binding(input, name + 1)?
+        name = expect(input, parsed.next_token, ")")?
+        receiver = Some(parsed.binding)
+    }
+    let open = expect(input, name, "IDENT")?
+    let first = expect(input, open, "(")?
+    let params = parse_bindings(input, first, ")")?
+    let mut body_start = params.next_token
+    let mut return_type: Option<Span> = None
+    let mut return_type_token = -1
+    if at(input, body_start, "->") {
+        let type_start = body_start + 1
+        body_start = parse_type(input, type_start)?
+        return_type = Some(span(input, type_start, body_start))
+        return_type_token = type_start
+    }
+    let next = skip_body(input, body_start)?
+    return Ok(Declaration {
+        kind: "fn", public: public, line: input.tokens[start].line, col: input.tokens[start].col,
+        name: span(input, name, open), bindings: params.bindings,
+        receiver: receiver, method: method, return_type: return_type, return_type_token: return_type_token,
+        body: Some(span(input, body_start, next)),
+        body_token: body_start, next_token: next,
+    })
+}
+
+pub fn parse_declarations(input: &lexer::Lexed) -> Result<[]Declaration, imports::ParseError> {
+    let mut decls: []Declaration = []
+    let mut i = 0
+    while i < len(input.tokens) && !at(input, i, "EOF") {
+        let prefix = imports::parse_imports_from(input, i)?
+        i = prefix.next_token
+        if at(input, i, "EOF") { break }
+        let public = at(input, i, "pub")
+        if public { i = i + 1 }
+        if at(input, i, "struct") {
+            let decl = parse_struct(input, i, public)?
+            i = decl.next_token
+            push(&mut decls, decl)
+        } else if at(input, i, "fn") {
+            let decl = parse_function(input, i, public)?
+            i = decl.next_token
+            push(&mut decls, decl)
+        } else {
+            return Err(error_at(input, i, "expected struct or fn declaration"))
+        }
+    }
+    return Ok(decls)
+}

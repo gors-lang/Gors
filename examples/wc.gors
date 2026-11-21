@@ -1,0 +1,24 @@
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: wc <file>")
+        return 2
+    }
+
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => {
+            let mut lines = 0
+            for byte in bytes {
+                if byte == 10 {
+                    lines = lines + 1
+                }
+            }
+            println(lines, len(bytes), path)
+            return 0
+        }
+        Err(message) => {
+            eprintln("wc:", path, message)
+            return 1
+        }
+    }
+}

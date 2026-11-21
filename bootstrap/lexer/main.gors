@@ -1,0 +1,22 @@
+import lexer "lexer.gors"
+
+fn print_tokens(lexed: lexer::Lexed) -> int {
+    let mut status = 0
+    for tok in lexed.tokens {
+        println(tok.line, tok.col, tok.kind, tok.start, tok.end)
+        if tok.kind == "ILLEGAL" { status = 1 }
+    }
+    return status
+}
+
+fn main(args: []string) -> int {
+    if len(args) != 1 {
+        eprintln("usage: gors-lex <file>")
+        return 2
+    }
+    let path = args[0]
+    match read_bytes(path) {
+        Ok(bytes) => { return print_tokens(lexer::scan(bytes)) }
+        Err(message) => { eprintln("gors-lex:", path, message); return 2 }
+    }
+}

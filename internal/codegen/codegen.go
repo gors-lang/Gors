@@ -58,6 +58,21 @@ func __gors_string_slice(s string, low, high int64) string {
 	}
 	for _, t := range sema.MonoTypes(info) {
 		g.genMono(t)
+		if sema.MonoName(t) == "Result_Slice_int64_str" {
+			g.out.WriteString(`func __gors_read_bytes(path string) Result_Slice_int64_str {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return Result_Slice_int64_str{err: "could not read file"}
+    }
+    values := make([]int64, len(data))
+    for i, b := range data {
+        values[i] = int64(b)
+    }
+    return Result_Slice_int64_str{ok: true, val: values}
+}
+
+`)
+		}
 	}
 	for _, fn := range prog.Funcs {
 		g.genFunc(fn)
@@ -136,10 +151,11 @@ func (g *gen) use(name string) {
 // --- declarations ---
 
 func (g *gen) genStruct(sd *ast.StructDecl) {
+	st := g.info.Structs[sd.Name]
 	g.line("type %s struct {", mangle(sd.Name))
 	g.ind++
 	for _, f := range sd.Fields {
-		g.line("%s %s", fieldName(f.Name), g.typeOf(f.Type))
+		g.line("%s %s", fieldName(f.Name), goType(st.Fields[f.Name]))
 	}
 	g.ind--
 	g.line("}")
@@ -231,7 +247,14 @@ func (g *gen) genFunc(fn *ast.FuncDecl) {
 		ret = " " + goType(sig.Ret)
 	}
 
-	if fn.Recv != nil {
+	entry := fn.Recv == nil && fn.Name == "main"
+	entryArgs := entry && len(fn.Params) == 1
+	if entry && sig.Ret != sema.VoidT {
+		g.line("func main() { os.Exit(int(__gors_main() & 255)) }")
+		g.line("func __gors_main() int64 {")
+	} else if entry {
+		g.line("func main() {")
+	} else if fn.Recv != nil {
 		rt, _ := g.resolveType(fn.Recv.Type)
 		g.line("func (%s %s) %s(%s)%s {", mangle(fn.Recv.Name), goType(rt),
 			mangle(fn.Name), strings.Join(params, ", "), ret)
@@ -247,8 +270,16 @@ func (g *gen) genFunc(fn *ast.FuncDecl) {
 		g.use(mangle(fn.Recv.Name))
 	}
 	for _, p := range fn.Params {
+		if entryArgs {
+			if p.Name == "_" {
+				continue
+			}
+			g.line("%s := append([]string(nil), os.Args[1:]...)", mangle(p.Name))
+		}
 		g.declare(mangle(p.Name))
-		g.use(mangle(p.Name))
+		if !entryArgs {
+			g.use(mangle(p.Name))
+		}
 	}
 	for _, s := range fn.Body.Stmts {
 		g.genStmt(s)
@@ -367,7 +398,8 @@ func (g *gen) genStmt(s ast.Stmt) {
 		} else if sema.IsPlace(st.Iter) {
 			g.line("%s := &%s", tmpPtr, g.expr(st.Iter))
 		} else {
-			iterVal := g.expr(st.Iter)
+			iterVal := g.temp()
+			g.line("%s := %s", iterVal, g.expr(st.Iter))
 			g.line("%s := &%s", tmpPtr, iterVal)
 		}
 
@@ -706,6 +738,14 @@ func (g *gen) call(ex *ast.Call) string {
 			return "fmt.Println(" + g.printArgs(ex.Args) + ")"
 		case "print":
 			return "fmt.Print(" + g.printArgs(ex.Args) + ")"
+		case "eprintln":
+			args := g.printArgs(ex.Args)
+			if args == "" {
+				return "fmt.Fprintln(os.Stderr)"
+			}
+			return "fmt.Fprintln(os.Stderr, " + args + ")"
+		case "read_bytes":
+			return "__gors_read_bytes(" + g.expr(ex.Args[0]) + ")"
 		case "len":
 			if len(ex.Args) == 1 {
 				if _, isSlice := g.info.ExprTypes[ex.Args[0]].(*sema.Slice); isSlice {
@@ -773,34 +813,6 @@ func (g *gen) printArgs(args []ast.Expr) string {
 		parts[i] = s
 	}
 	return strings.Join(parts, ", ")
-}
-
-func (g *gen) typeOf(te ast.TypeExpr) string {
-	if te == nil {
-		return "int64"
-	}
-	if t, ok := g.resolveType(te); ok {
-		return goType(t)
-	}
-	switch t := te.(type) {
-	case *ast.NamedType:
-		switch t.Name {
-		case "int":
-			return "int64"
-		case "float":
-			return "float64"
-		case "bool":
-			return "bool"
-		case "string":
-			return "string"
-		}
-		return mangle(t.Name)
-	case *ast.PtrType:
-		return "*" + g.typeOf(t.Elem)
-	case *ast.SliceType:
-		return "[]" + g.typeOf(t.Elem)
-	}
-	return "int64"
 }
 
 func goType(t sema.Type) string {

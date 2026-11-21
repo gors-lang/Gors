@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gors/internal/compiler"
@@ -54,7 +55,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `GoRs compiler
 
 usage:
-  gors run   <file.gors> [--backend c|go]   compile and run
+  gors run   <file.gors> [--backend c|go] [-- args...]   compile and run
   gors build <file.gors> [-o out]           compile to a native binary
   gors emit  <file.gors> [--backend c|go]   print generated source
   gors --version                         print compiler version
@@ -137,6 +138,11 @@ func emitCmd(args []string) int {
 }
 
 func runCmd(args []string, build bool) int {
+	var programArgs []string
+	if split := slices.Index(args, "--"); !build && split >= 0 {
+		programArgs = args[split+1:]
+		args = args[:split]
+	}
 	o := parseArgs(args)
 	if len(o.rest) < 1 {
 		usage()
@@ -195,7 +201,7 @@ func runCmd(args []string, build bool) int {
 		return 0
 	}
 
-	cmd := exec.Command(binName)
+	cmd := exec.Command(binName, programArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

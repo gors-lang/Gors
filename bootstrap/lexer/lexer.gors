@@ -1,0 +1,336 @@
+import unicode "unicode.gors"
+
+pub struct Token {
+    kind: string,
+    line: int,
+    col: int,
+    start: int,
+    end: int,
+}
+
+pub struct Lexed {
+    source: []int,
+    tokens: []Token,
+}
+
+struct Rune {
+    value: int,
+    width: int,
+}
+
+struct Cursor {
+    bytes: []int,
+    offset: int,
+    line: int,
+    col: int,
+}
+
+struct Categories {
+    letters: []int,
+    digits: []int,
+}
+
+fn (c: &Cursor) byte_at(offset: int) -> int {
+    if offset >= len(c.bytes) { return -1 }
+    return c.bytes[offset]
+}
+
+// Decode one rune, consuming one byte on invalid UTF-8, just as Go does.
+fn (c: &Cursor) decode(offset: int) -> Rune {
+    let first = c.byte_at(offset)
+    if first < 0 { return Rune { value: 0, width: 0 } }
+    if first == 13 && c.byte_at(offset + 1) == 10 {
+        return Rune { value: 10, width: 2 }
+    }
+    if first < 128 { return Rune { value: first, width: 1 } }
+
+    let mut width = 0
+    let mut value = 0
+    let mut minimum = 0
+    if first >= 194 && first <= 223 {
+        width = 2
+        value = first - 192
+        minimum = 128
+    } else if first >= 224 && first <= 239 {
+        width = 3
+        value = first - 224
+        minimum = 2048
+    } else if first >= 240 && first <= 244 {
+        width = 4
+        value = first - 240
+        minimum = 65536
+    } else {
+        return Rune { value: 65533, width: 1 }
+    }
+
+    let mut i = 1
+    while i < width {
+        let next = c.byte_at(offset + i)
+        if next < 128 || next > 191 { return Rune { value: 65533, width: 1 } }
+        value = value * 64 + next - 128
+        i = i + 1
+    }
+    if value < minimum || value > 1114111 || (value >= 55296 && value <= 57343) {
+        return Rune { value: 65533, width: 1 }
+    }
+    return Rune { value: value, width: width }
+}
+
+fn (c: &Cursor) peek() -> int {
+    let r = c.decode(c.offset)
+    return r.value
+}
+
+fn (c: &Cursor) following() -> int {
+    let r = c.decode(c.offset)
+    let next = c.decode(c.offset + r.width)
+    return next.value
+}
+
+fn (c: &mut Cursor) advance() {
+    let r = c.decode(c.offset)
+    c.offset = c.offset + r.width
+    if r.value == 10 {
+        c.line = c.line + 1
+        c.col = 1
+    } else if r.width != 0 {
+        c.col = c.col + 1
+    }
+}
+
+fn (c: &mut Cursor) skip_space() {
+    while true {
+        let ch = c.peek()
+        if ch == 32 || ch == 9 || ch == 10 || ch == 13 {
+            c.advance()
+        } else if ch == 47 && c.following() == 47 {
+            while c.peek() != 10 && c.peek() != 0 { c.advance() }
+        } else if ch == 47 && c.following() == 42 {
+            c.advance()
+            c.advance()
+            while c.peek() != 0 {
+                if c.peek() == 42 && c.following() == 47 {
+                    c.advance()
+                    c.advance()
+                    break
+                }
+                c.advance()
+            }
+        } else {
+            return
+        }
+    }
+}
+
+fn in_ranges(ranges: &[]int, value: int) -> bool {
+    let mut low = 0
+    let mut high = len(*ranges) / 2
+    while low < high {
+        let mid = low + (high - low) / 2
+        if value < (*ranges)[mid * 2] {
+            high = mid
+        } else if value > (*ranges)[mid * 2 + 1] {
+            low = mid + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+fn (categories: &Categories) letter(ch: int) -> bool {
+    if ch < 128 {
+        return (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122)
+    }
+    return in_ranges(&categories.letters, ch)
+}
+
+fn (categories: &Categories) digit(ch: int) -> bool {
+    if ch < 128 { return ch >= 48 && ch <= 57 }
+    return in_ranges(&categories.digits, ch)
+}
+
+fn (c: &Cursor) keyword(start: int) -> string {
+    let size = c.offset - start
+    if size == 2 &&
+        c.byte_at(start) == 105 &&
+        c.byte_at(start + 1) == 102 { return "if" }
+    if size == 2 &&
+        c.byte_at(start) == 102 &&
+        c.byte_at(start + 1) == 110 { return "fn" }
+    if size == 2 &&
+        c.byte_at(start) == 105 &&
+        c.byte_at(start + 1) == 110 { return "in" }
+    if size == 3 &&
+        c.byte_at(start) == 108 &&
+        c.byte_at(start + 1) == 101 &&
+        c.byte_at(start + 2) == 116 { return "let" }
+    if size == 3 &&
+        c.byte_at(start) == 109 &&
+        c.byte_at(start + 1) == 117 &&
+        c.byte_at(start + 2) == 116 { return "mut" }
+    if size == 3 &&
+        c.byte_at(start) == 112 &&
+        c.byte_at(start + 1) == 117 &&
+        c.byte_at(start + 2) == 98 { return "pub" }
+    if size == 3 &&
+        c.byte_at(start) == 102 &&
+        c.byte_at(start + 1) == 111 &&
+        c.byte_at(start + 2) == 114 { return "for" }
+    if size == 4 &&
+        c.byte_at(start) == 101 &&
+        c.byte_at(start + 1) == 108 &&
+        c.byte_at(start + 2) == 115 &&
+        c.byte_at(start + 3) == 101 { return "else" }
+    if size == 4 &&
+        c.byte_at(start) == 116 &&
+        c.byte_at(start + 1) == 114 &&
+        c.byte_at(start + 2) == 117 &&
+        c.byte_at(start + 3) == 101 { return "true" }
+    if size == 5 &&
+        c.byte_at(start) == 98 &&
+        c.byte_at(start + 1) == 114 &&
+        c.byte_at(start + 2) == 101 &&
+        c.byte_at(start + 3) == 97 &&
+        c.byte_at(start + 4) == 107 { return "break" }
+    if size == 5 &&
+        c.byte_at(start) == 102 &&
+        c.byte_at(start + 1) == 97 &&
+        c.byte_at(start + 2) == 108 &&
+        c.byte_at(start + 3) == 115 &&
+        c.byte_at(start + 4) == 101 { return "false" }
+    if size == 5 &&
+        c.byte_at(start) == 109 &&
+        c.byte_at(start + 1) == 97 &&
+        c.byte_at(start + 2) == 116 &&
+        c.byte_at(start + 3) == 99 &&
+        c.byte_at(start + 4) == 104 { return "match" }
+    if size == 5 &&
+        c.byte_at(start) == 119 &&
+        c.byte_at(start + 1) == 104 &&
+        c.byte_at(start + 2) == 105 &&
+        c.byte_at(start + 3) == 108 &&
+        c.byte_at(start + 4) == 101 { return "while" }
+    if size == 6 &&
+        c.byte_at(start) == 105 &&
+        c.byte_at(start + 1) == 109 &&
+        c.byte_at(start + 2) == 112 &&
+        c.byte_at(start + 3) == 111 &&
+        c.byte_at(start + 4) == 114 &&
+        c.byte_at(start + 5) == 116 { return "import" }
+    if size == 6 &&
+        c.byte_at(start) == 114 &&
+        c.byte_at(start + 1) == 101 &&
+        c.byte_at(start + 2) == 116 &&
+        c.byte_at(start + 3) == 117 &&
+        c.byte_at(start + 4) == 114 &&
+        c.byte_at(start + 5) == 110 { return "return" }
+    if size == 6 &&
+        c.byte_at(start) == 115 &&
+        c.byte_at(start + 1) == 116 &&
+        c.byte_at(start + 2) == 114 &&
+        c.byte_at(start + 3) == 117 &&
+        c.byte_at(start + 4) == 99 &&
+        c.byte_at(start + 5) == 116 { return "struct" }
+    if size == 8 &&
+        c.byte_at(start) == 99 &&
+        c.byte_at(start + 1) == 111 &&
+        c.byte_at(start + 2) == 110 &&
+        c.byte_at(start + 3) == 116 &&
+        c.byte_at(start + 4) == 105 &&
+        c.byte_at(start + 5) == 110 &&
+        c.byte_at(start + 6) == 117 &&
+        c.byte_at(start + 7) == 101 { return "continue" }
+    return "IDENT"
+}
+
+fn (c: &mut Cursor) number(categories: &Categories) -> string {
+    while categories.digit(c.peek()) || c.peek() == 95 { c.advance() }
+    if c.peek() != 46 || !categories.digit(c.following()) { return "INT" }
+    c.advance()
+    while categories.digit(c.peek()) || c.peek() == 95 { c.advance() }
+    return "FLOAT"
+}
+
+fn (c: &mut Cursor) quoted_string() -> string {
+    c.advance()
+    while true {
+        let ch = c.peek()
+        if ch == 0 || ch == 10 { return "ILLEGAL" }
+        c.advance()
+        if ch == 34 { return "STRING" }
+        if ch == 92 { c.advance() }
+    }
+    return "ILLEGAL"
+}
+
+fn (c: &mut Cursor) punctuation() -> string {
+    let first = c.peek()
+    c.advance()
+    let next = c.peek()
+    if first == 61 && next == 62 { c.advance(); return "=>" }
+    if first == 61 && next == 61 { c.advance(); return "==" }
+    if first == 33 && next == 61 { c.advance(); return "!=" }
+    if first == 60 && next == 61 { c.advance(); return "<=" }
+    if first == 62 && next == 61 { c.advance(); return ">=" }
+    if first == 38 && next == 38 { c.advance(); return "&&" }
+    if first == 124 && next == 124 { c.advance(); return "||" }
+    if first == 45 && next == 62 { c.advance(); return "->" }
+    if first == 58 && next == 58 { c.advance(); return "::" }
+    if first == 61 { return "=" }
+    if first == 33 { return "!" }
+    if first == 60 { return "<" }
+    if first == 62 { return ">" }
+    if first == 38 { return "&" }
+    if first == 45 { return "-" }
+    if first == 43 { return "+" }
+    if first == 42 { return "*" }
+    if first == 47 { return "/" }
+    if first == 37 { return "%" }
+    if first == 40 { return "(" }
+    if first == 41 { return ")" }
+    if first == 123 { return "{" }
+    if first == 125 { return "}" }
+    if first == 91 { return "[" }
+    if first == 93 { return "]" }
+    if first == 44 { return "," }
+    if first == 58 { return ":" }
+    if first == 46 { return "." }
+    if first == 59 { return ";" }
+    if first == 63 { return "?" }
+    return "ILLEGAL"
+}
+
+fn (c: &mut Cursor) scan_token(categories: &Categories) -> string {
+    let ch = c.peek()
+    if ch == 95 || categories.letter(ch) {
+        let start = c.offset
+        c.advance()
+        while c.peek() == 95 || categories.letter(c.peek()) || categories.digit(c.peek()) {
+            c.advance()
+        }
+        return c.keyword(start)
+    }
+    if categories.digit(ch) { return c.number(categories) }
+    if ch == 34 { return c.quoted_string() }
+    return c.punctuation()
+}
+
+pub fn scan(bytes: []int) -> Lexed {
+    let categories = Categories { letters: unicode::letters(), digits: unicode::digits() }
+    let mut cursor = Cursor { bytes: bytes, offset: 0, line: 1, col: 1 }
+    let mut tokens: []Token = []
+    cursor.skip_space()
+    while cursor.peek() != 0 {
+        let start = cursor.offset
+        let line = cursor.line
+        let col = cursor.col
+        let kind = cursor.scan_token(&categories)
+        push(&mut tokens, Token { kind: kind, line: line, col: col, start: start, end: cursor.offset })
+        cursor.skip_space()
+    }
+    push(&mut tokens, Token {
+        kind: "EOF", line: cursor.line, col: cursor.col, start: cursor.offset, end: cursor.offset,
+    })
+    return Lexed { source: cursor.bytes, tokens: tokens }
+}
