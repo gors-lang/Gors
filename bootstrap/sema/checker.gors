@@ -364,6 +364,14 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
     }
     let tok = &c.graph.input.tokens[callee.first]
     let argc = len(node.children) - 1
+    if c.word(tok.start, tok.end, [97, 115, 115, 101, 114, 116]) { // assert
+        if argc != 2 { return Err(c.issue(callee.first, "assert expects a bool condition and a string message")) }
+        let condition = c.expr(scope, node.children[1], 3)?
+        if condition != 3 { return Err(c.issue(c.tree.nodes[node.children[1]].first, "assert argument 1 expects bool")) }
+        let message = c.read_arg(scope, node.children[2], 4)?
+        if message != 4 { return Err(c.issue(c.tree.nodes[node.children[2]].first, "assert argument 2 expects string")) }
+        return Ok(0)
+    }
     let variant = c.variant(node.children[0])
     if variant == 4 { return Err(c.issue(callee.first, "None is a value, not a call")) }
     if variant == 3 {
@@ -794,7 +802,7 @@ fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int, moving: 
         }
         scope.visible = visible
         all_return = all_return && returns
-        if !returns {
+        if is_expression || !c.exits_block(arm.children[1]) {
             if has_continuation { scope.merge_moves(&merged) }
             merged = scope.moved_flags()
             has_continuation = true
@@ -967,8 +975,8 @@ fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
         scope.restore_moves(&before)
         let mut else_returns = false
         if node.children[3] >= 0 { else_returns = c.stmt(scope, node.children[3])? }
-        if else_returns { scope.restore_moves(&then_moves) }
-        else if !then_returns { scope.merge_moves(&then_moves) }
+        if c.exits_block(node.children[3]) { scope.restore_moves(&then_moves) }
+        else if !c.exits_block(node.children[2]) { scope.merge_moves(&then_moves) }
         return Ok(then_returns && else_returns)
     }
     if node.kind == "while" {
@@ -994,6 +1002,25 @@ fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
         return Ok(false)
     }
     return Err(c.issue(node.first, "statement is outside the bootstrap subset"))
+}
+
+fn (c: &Checked) exits_block(id: int) -> bool {
+    if id < 0 { return false }
+    let node = &c.tree.nodes[id]
+    if node.kind == "return" || node.kind == "break" || node.kind == "continue" { return true }
+    if node.kind == "if" {
+        return c.exits_block(node.children[2]) && c.exits_block(node.children[3])
+    }
+    if node.kind == "block" {
+        for child in node.children {
+            if c.exits_block(child) { return true }
+        }
+    }
+    if node.kind == "match_statement" && len(node.children) == 3 {
+        return c.exits_block(c.tree.nodes[node.children[1]].children[1]) &&
+            c.exits_block(c.tree.nodes[node.children[2]].children[1])
+    }
+    return false
 }
 
 fn (c: &Checked) block(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {

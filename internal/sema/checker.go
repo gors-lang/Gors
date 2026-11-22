@@ -1113,6 +1113,17 @@ func (c *checker) checkCall(ex *ast.Call) Type {
 				c.checkExpr(a)
 			}
 			return VoidT
+		case "assert":
+			if len(ex.Args) != 2 {
+				c.errf("E188", ex.At, "assert expects a bool condition and a string message")
+				return nil
+			}
+			for i, want := range []Type{Bool, String} {
+				if got := c.checkExprExpected(ex.Args[i], want); got != nil && !sameType(got, want) {
+					c.errf("E188", ex.Args[i].Pos(), "assert argument %d expects %s", i+1, want.String())
+				}
+			}
+			return VoidT
 		case "read_bytes":
 			if len(ex.Args) != 1 {
 				c.errf("E184", ex.At, "read_bytes takes exactly one path argument")
@@ -1273,7 +1284,7 @@ func (c *checker) resolveMethod(field *ast.Field) (*FuncSig, *StructT) {
 
 func isBuiltin(name string) bool {
 	switch name {
-	case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
+	case "println", "print", "eprintln", "assert", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
 		return true
 	}
 	return false

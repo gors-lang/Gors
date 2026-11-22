@@ -44,6 +44,13 @@ func Generate(prog *ast.Program, info *sema.Info) (string, error) {
     return i
 }
 
+func __gors_assert(condition bool, message string) {
+    if !condition {
+        fmt.Fprintln(os.Stderr, "gors: assertion failed:", message)
+        os.Exit(1)
+    }
+}
+
 func __gors_bytes_to_string(values []int64) string {
     bytes := make([]byte, len(values))
     for i, n := range values {
@@ -791,6 +798,10 @@ func (g *gen) call(ex *ast.Call) string {
 				return "fmt.Fprintln(os.Stderr)"
 			}
 			return "fmt.Fprintln(os.Stderr, " + args + ")"
+		case "assert":
+			condition := g.temp()
+			g.emitPending("%s := %s", condition, g.expr(ex.Args[0]))
+			return "__gors_assert(" + condition + ", " + g.expr(ex.Args[1]) + ")"
 		case "read_bytes":
 			return "__gors_read_bytes(" + g.expr(ex.Args[0]) + ")"
 		case "write_text":

@@ -223,6 +223,11 @@ fn main() {
  fn(a:&A_B)C()->int{return a.x} fn(a:&A)B_C()->int{return a.x}
  fn main(){let a=A_B{x:1};let b=A{x:2};println(a.C());println(b.B_C())}`, "1\n2\n", false},
 		{"bounds", `fn main() { let xs = [1]; println(xs[2]) }`, "gors: index 2 out of bounds (len 1)\n", true},
+		{"assert evaluates arguments in order", `
+fn test() -> bool { println("condition"); return true }
+fn message() -> string { println("message"); return "unused" }
+fn main() { assert(test(), message()); println("running") }`, "condition\nmessage\nrunning\n", false},
+		{"assert failure", `fn main() { assert(false, "check failed"); println("unreachable") }`, "gors: assertion failed: check failed\n", true},
 		{"slice negative bound", `fn main() { let xs = [1, 2]; println(len(xs[-1:1])) }`, "gors: slice bounds out of range [-1:1] (len 2)\n", true},
 		{"slice reversed bounds", `fn main() { let xs = [1, 2]; println(len(xs[2:1])) }`, "gors: slice bounds out of range [2:1] (len 2)\n", true},
 		{"slice past length", `fn main() { let xs = [1, 2]; println(len(xs[:3])) }`, "gors: slice bounds out of range [0:3] (len 2)\n", true},
@@ -327,7 +332,7 @@ fn main() {
 					ctxRun, cancelRun := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancelRun()
 					cmd := exec.CommandContext(ctxRun, bin)
-					// Fatal bounds errors terminate without unwinding in either backend.
+					// Fatal runtime errors terminate without unwinding.
 					// Check leak freedom on successful executions only.
 					leakcheck := "1"
 					if tc.fails {

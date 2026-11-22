@@ -28,20 +28,10 @@ func TestBootstrapCEmitter(t *testing.T) {
 		}
 		return path
 	}
-	ownershipFixture := func(name, code, source string) string {
-		t.Helper()
+	diagnosticCodes := map[string]string{}
+	checkedFixture := func(name, code, source string) string {
 		path := write(name, source)
-		_, diagnostics := compiler.CompileFile(path, compiler.BackendC)
-		if code == "" && len(diagnostics) == 0 {
-			return path
-		}
-		for _, diagnostic := range diagnostics {
-			var semantic *sema.Error
-			if errors.As(diagnostic, &semantic) && semantic.Code == code {
-				return path
-			}
-		}
-		t.Fatalf("main compiler, %s: wanted diagnostic %q, got %v", name, code, diagnostics)
+		diagnosticCodes[path] = code
 		return path
 	}
 	cases := []struct {
@@ -52,7 +42,13 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"fib", filepath.Join("..", "..", "examples", "fib.gors"), "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n", "", 0, nil},
 		{"hello", filepath.Join("..", "..", "examples", "hello.gors"), "hello from GoRs\n", "", 0, nil},
 		{"Point by value", filepath.Join("..", "..", "examples", "point.gors"), "25\n", "", 0, nil},
-		{"ownership control flow", ownershipFixture("ownership control flow", "", `
+		{"assert evaluates arguments in order", write("assert arguments", `
+			fn test() -> bool { println("condition"); return true }
+			fn message() -> string { println("message"); return "unused" }
+			fn main() { assert(test(), message()); println("running") }
+		`), "condition\nmessage\nrunning\n", "", 0, nil},
+		{"assert failure", write("assert failure", `fn main() { assert(false, "check failed"); println("unreachable") }`), "", "gors: assertion failed: check failed\n", 1, nil},
+		{"ownership control flow", write("ownership control flow", `
 			fn take(xs: []int) {}
 			fn size(xs: &[]int) -> int { return len(*xs) }
 			fn update(flag: bool) -> int {
@@ -68,6 +64,32 @@ func TestBootstrapCEmitter(t *testing.T) {
 			}
 			fn main() { println(update(true), update(false)) }
 		`), "2\n3\n3 4\n", "", 0, nil},
+		{"ownership on exiting paths", write("ownership on exiting paths", `
+			fn take(xs: []int) {}
+			fn choose(flag: bool) -> int {
+				let xs = [1]
+				if flag { take(xs); return 0 }
+				match Some(flag) {
+					Some(ok) => { if ok { take(xs); return 2 } },
+					None => { take(xs); return 3 },
+				}
+				return len(xs)
+			}
+			fn main() -> int {
+				println(choose(true), choose(false))
+				let mut total = 0
+				let mut source = [1, 2, 3]
+				for value in source {
+					let xs = [value]
+					if value == 1 { take(xs); continue }
+					if value == 3 { take(xs); break }
+					total = total + xs[0]
+				}
+				push(&mut source, 4)
+				println(total, len(source))
+				return 7
+			}
+		`), "0 1\n2 4\n", "", 7, nil},
 		{"float arithmetic and slices", write("float arithmetic and slices", `
 			struct Sample { value: float }
 			fn scale(s: &Sample, factor: float) -> float {
@@ -234,6 +256,9 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"type error", write("type error", "fn main() { let x: bool = 1 }"), "initializer type mismatch"},
 		{"invalid float separator", write("invalid float separator", "fn main() { println(1.5_) }"), "invalid separator in float literal"},
 		{"float remainder", write("float remainder", "fn main() { println(1.5 % 1.0) }"), "operator does not accept this type"},
+		{"assert arity", checkedFixture("assert arity", "E188", `fn main() { assert(true) }`), "assert expects a bool condition and a string message"},
+		{"assert condition", checkedFixture("assert condition", "E188", `fn main() { assert(1, "number") }`), "assert argument 1 expects bool"},
+		{"assert message", checkedFixture("assert message", "E188", `fn main() { assert(true, 1) }`), "assert argument 2 expects string"},
 		{"overflowing literal", write("overflowing literal", "fn main() { println(9223372036854775808) }"), "integer literal exceeds int"},
 		{"nested slices", write("nested slices", "fn main() { let xs = [[1]] }"), "nested slices are outside"},
 		{"immutable push", write("immutable push", "fn main() { let xs = [1]; push(&mut xs, 2) }"), "assignment to immutable name"},
@@ -255,15 +280,18 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"immutable field assignment", write("immutable field assignment", `struct A { x: int } fn main() { let a = A { x: 1 }; a.x = 2 }`), "assignment to immutable name"},
 		{"immutable receiver", write("immutable receiver", `struct A { x: int } fn (p: &mut A) set() { p.x = 2 } fn main() { let a = A { x: 1 }; a.set() }`), "assignment to immutable name"},
 		{"shared receiver write", write("shared receiver write", `struct A { x: int } fn (p: &A) set() { p.x = 2 } fn main() { }`), "assignment to immutable name"},
-		{"conflicting call borrows", ownershipFixture("conflicting call borrows", "E205", `struct A { x: int } fn f(p: &mut A, q: &A) {} fn main() { let mut a = A { x: 1 }; f(&mut a, &a) }`), "conflicting borrows in call"},
-		{"moved slice", ownershipFixture("moved slice", "E200", `fn take(xs: []int) {} fn main() { let xs = [1]; take(xs); println(len(xs)) }`), "use of moved value"},
-		{"moved string in one branch", ownershipFixture("moved string in one branch", "E200", `fn take(s: string) {} fn demo(flag: bool) { let s = "hi"; if flag { take(s) }; println(s) } fn main() {}`), "use of moved value"},
-		{"moved struct in match arm", ownershipFixture("moved struct in match arm", "E200", `struct A { x: int } fn take(a: A) {} fn main() { let a = A { x: 1 }; match Some(1) { Some(_) => { take(a) }, None => {} }; println(a.x) }`), "use of moved value"},
-		{"mutable borrow after shared alias", ownershipFixture("mutable borrow after shared alias", "E204", `fn main() { let mut xs = [1]; let r = &xs; let alias = r; push(&mut xs, 2); println(len(*alias)) }`), "value is still shared"},
-		{"assignment while shared", ownershipFixture("assignment while shared", "E206", `fn main() { let mut xs = [1]; let r = &xs; xs = [2]; println(len(*r)) }`), "value is still shared"},
-		{"move during call borrow", ownershipFixture("move during call borrow", "E203", `fn f(a: &[]int, b: []int) {} fn main() { let xs = [1]; f(&xs, xs) }`), "conflicting borrows in call"},
-		{"nested read during mutable call borrow", ownershipFixture("nested read during mutable call borrow", "E202", `fn f(a: &mut []int, n: int) {} fn main() { let mut xs = [1]; f(&mut xs, len(xs)) }`), "conflicting borrows in call"},
-		{"conflicting receiver borrow", ownershipFixture("conflicting receiver borrow", "E205", `struct A { x: int } fn (p: &mut A) f(q: &A) {} fn main() { let mut a = A { x: 1 }; a.f(&a) }`), "conflicting borrows in call"},
+		{"conflicting call borrows", checkedFixture("conflicting call borrows", "E205", `struct A { x: int } fn f(p: &mut A, q: &A) {} fn main() { let mut a = A { x: 1 }; f(&mut a, &a) }`), "conflicting borrows in call"},
+		{"moved slice", checkedFixture("moved slice", "E200", `fn take(xs: []int) {} fn main() { let xs = [1]; take(xs); println(len(xs)) }`), "use of moved value"},
+		{"moved string in one branch", checkedFixture("moved string in one branch", "E200", `fn take(s: string) {} fn demo(flag: bool) { let s = "hi"; if flag { take(s) }; println(s) } fn main() {}`), "use of moved value"},
+		{"moved struct in match arm", checkedFixture("moved struct in match arm", "E200", `struct A { x: int } fn take(a: A) {} fn main() { let a = A { x: 1 }; match Some(1) { Some(_) => { take(a) }, None => {} }; println(a.x) }`), "use of moved value"},
+		{"mutable borrow after shared alias", checkedFixture("mutable borrow after shared alias", "E204", `fn main() { let mut xs = [1]; let r = &xs; let alias = r; push(&mut xs, 2); println(len(*alias)) }`), "value is still shared"},
+		{"assignment while shared", checkedFixture("assignment while shared", "E206", `fn main() { let mut xs = [1]; let r = &xs; xs = [2]; println(len(*r)) }`), "value is still shared"},
+		{"move during call borrow", checkedFixture("move during call borrow", "E203", `fn f(a: &[]int, b: []int) {} fn main() { let xs = [1]; f(&xs, xs) }`), "conflicting borrows in call"},
+		{"nested read during mutable call borrow", checkedFixture("nested read during mutable call borrow", "E202", `fn f(a: &mut []int, n: int) {} fn main() { let mut xs = [1]; f(&mut xs, len(xs)) }`), "conflicting borrows in call"},
+		{"move across loop back edge", checkedFixture("move across loop back edge", "E212", `fn take(xs: []int) {} fn demo(flag: bool) { let xs = [1]; while flag { take(xs) } } fn main() {}`), "outside a repeating loop"},
+		{"loop may not reinitialize", checkedFixture("loop may not reinitialize", "E200", `fn take(xs: []int) {} fn demo(flag: bool) { let mut xs = [1]; take(xs); while flag { xs = [2]; break }; println(len(xs)) } fn main() {}`), "use of moved value"},
+		{"mutation during slice iteration", checkedFixture("mutation during slice iteration", "E204", `fn main() { let mut xs = [1]; for n in xs { push(&mut xs, n) } }`), "conflicting borrows"},
+		{"conflicting receiver borrow", checkedFixture("conflicting receiver borrow", "E205", `struct A { x: int } fn (p: &mut A) f(q: &A) {} fn main() { let mut a = A { x: 1 }; a.f(&a) }`), "conflicting borrows in call"},
 		{"escaping reference", write("escaping reference", `struct A { x: int } fn f(p: &A) -> &A { return p } fn main() {}`), "returning references is outside"},
 		{"nonexhaustive Option", write("nonexhaustive Option", `fn main() { match Some(1) { Some(x) => println(x) } }`), "match must cover both Some and None"},
 		{"wrong try error type", write("wrong try error type", `
@@ -351,6 +379,20 @@ func TestBootstrapCEmitter(t *testing.T) {
 			})
 			for _, tc := range bad {
 				t.Run(tc.name, func(t *testing.T) {
+					if code := diagnosticCodes[tc.path]; code != "" {
+						_, diagnostics := compiler.CompileFile(tc.path, compiler.BackendC)
+						found := false
+						for _, diagnostic := range diagnostics {
+							var semantic *sema.Error
+							if errors.As(diagnostic, &semantic) && semantic.Code == code {
+								found = true
+								break
+							}
+						}
+						if !found {
+							t.Fatalf("main compiler: wanted diagnostic %s, got %v", code, diagnostics)
+						}
+					}
 					out, diagnostics := runBootstrapCommand(t, emitter, 1, "emit", tc.path)
 					if out != "" || !strings.Contains(diagnostics, tc.message) || strings.Contains(diagnostics, "leaked allocation") {
 						t.Fatalf("got stdout %q stderr %q, expected only diagnostic %q", out, diagnostics, tc.message)

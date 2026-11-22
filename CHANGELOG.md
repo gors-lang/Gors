@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added `assert(condition, message)` to both compilers. A failed assertion
+  prints a diagnostic to stderr and exits with status 1.
+- Both compilers merge ownership states from branches that can reach the next
+  statement. Returning or leaving the current loop iteration no longer makes a
+  value appear moved on paths that continue.
+- Slice iteration keeps a shared borrow until the loop finishes, including
+  when the loop variable holds a copy of a scalar element.
 - Bootstrap checks moves of owning values, restores a mutable binding on
   reassignment, and checks conflicts with shared references and call arguments.
 - The main compiler also permits reinitializing a moved mutable binding

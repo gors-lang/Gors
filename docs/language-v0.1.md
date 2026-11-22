@@ -47,6 +47,12 @@ The entry file's `main` takes either zero parameters or one `[]string` parameter
 
 ### File I/O and diagnostics
 
+- The development branch supports `assert(condition, message)`. It evaluates
+  the `bool` condition and the `string` message once, left to right, and borrows
+  the message for the call. If the condition is false, it prints
+  `gors: assertion failed: <message>` to stderr and exits with status 1.
+  For example, `assert(len(args) > 0, "expected an input file")`.
+
 - `read_bytes(path)` reads the whole file and returns `Result<[]int, string>`. Each element in `Ok` is a byte from 0 to 255. If opening or reading the file fails, the function returns `Err("could not read file")`. It borrows the path for the duration of the call.
 - `write_text(path, text)` writes a string without appending a newline and returns `Result<bool, string>`. It borrows both arguments. It writes a temporary file before replacing the destination. Success returns `Ok(true)`. Failure returns `Err("could not write file")`. The main C backend uses null-terminated strings. The Go backend and bootstrap compiler preserve embedded null bytes.
 - `eprintln(...)` writes its arguments and a newline to stderr.
@@ -116,7 +122,7 @@ References may be locals or parameters, and functions and methods may return the
 
 References cannot be stored in struct fields, slices, `Option`, or `Result`. Moving an owning field through a reference is an error.
 
-Local shadowing is prohibited. A repeating loop cannot move an owning value declared outside that loop. Create the value inside each iteration or pass it by reference. Borrows used again in the loop remain active across its back edge. The checker merges ownership states across `if`, `if let`, and `match` branches and can reject some safe programs.
+Local shadowing is prohibited. A repeating loop cannot move an owning value declared outside that loop. Create the value inside each iteration or pass it by reference. Borrows used again in the loop remain active across its back edge. A `for` loop holds a shared borrow of the slice for the duration of iteration. The checker merges ownership states from branches of `if`, `if let`, and `match` that can reach the next statement. A loop may run zero times, so assigning inside it alone does not reinitialize a moved value for use after the loop.
 
 The C backend drops owning values on normal scope exit, return, and error propagation through `?`. It drops temporaries after an expression and drops the old value of a binding after evaluating its replacement. After a partial move, it drops the remaining fields.
 

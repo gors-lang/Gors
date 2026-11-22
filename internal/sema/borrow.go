@@ -420,18 +420,7 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 		}
 		elseMoved, elseLoans := b.snapshot()
 
-		// Merge: a value is moved if it is moved on any path.
-		merged := map[string]moveState{}
-		for k, v := range thenMoved {
-			merged[k] = v
-		}
-		for k, v := range elseMoved {
-			if v.moved {
-				merged[k] = v
-			}
-		}
-		b.restore(merged, nil)
-		b.loans = mergeLoans(thenLoans, elseLoans)
+		b.joinBranches(st.Then, st.Else, thenMoved, elseMoved, thenLoans, elseLoans)
 
 	case *ast.WhileStmt:
 		owners := map[*varState]bool{}
@@ -486,6 +475,9 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 
 		beforeMoved, beforeLoans := b.snapshot()
 
+		if root, ok := rootIdent(st.Iter); ok {
+			b.loans = append(b.loans, &loan{root: root, end: endSeq, pos: st.At})
+		}
 		b.pushScope()
 		if st.Key != "" && st.Key != "_" {
 			b.declare(st.Key, &varState{typ: Int, mut: false})
@@ -494,17 +486,6 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 			vt := b.info.ForTypes[st]
 			if vt != nil {
 				b.declare(st.Value, &varState{typ: vt, mut: false})
-				if _, ok := vt.(*Ptr); ok {
-					if root, ok := rootIdent(st.Iter); ok {
-						b.loans = append(b.loans, &loan{
-							root:     root,
-							borrower: st.Value,
-							mutable:  false,
-							end:      endSeq,
-							pos:      st.At,
-						})
-					}
-				}
 			}
 		}
 		for _, s := range st.Body.Stmts {
@@ -538,12 +519,7 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 			b.checkStmt(st.Else)
 		}
 		other, otherLoans := b.snapshot()
-		for name, state := range then {
-			if state.moved {
-				other[name] = state
-			}
-		}
-		b.restore(other, mergeLoans(thenLoans, otherLoans))
+		b.joinBranches(st.Then, st.Else, then, other, thenLoans, otherLoans)
 
 	case *ast.MatchStmt:
 		b.at(st.Value)
@@ -555,6 +531,9 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 			b.restore(before, loans)
 			bound := b.info.MatchTypes[arm]
 			b.checkMatchArm(arm, bound, false)
+			if ast.ExitsBlock(arm.Body) {
+				continue
+			}
 			moved, ls := b.snapshot()
 			for name, state := range moved {
 				if old, ok := merged[name]; !ok || !old.moved {
@@ -568,6 +547,22 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 	case *ast.Block:
 		b.checkBlock(st)
 	}
+}
+
+func (b *borrowChecker) joinBranches(then, other ast.Stmt, thenMoved, otherMoved map[string]moveState, thenLoans, otherLoans []*loan) {
+	if ast.ExitsBlock(other) {
+		b.restore(thenMoved, thenLoans)
+		return
+	}
+	if !ast.ExitsBlock(then) {
+		for name, state := range thenMoved {
+			if state.moved {
+				otherMoved[name] = state
+			}
+		}
+		otherLoans = mergeLoans(thenLoans, otherLoans)
+	}
+	b.restore(otherMoved, otherLoans)
 }
 
 // checkBlockWithName checks a block with one extra binding in scope.
@@ -822,7 +817,7 @@ func (b *borrowChecker) checkCall(c *ast.Call) {
 	}
 	if id, ok := c.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print", "eprintln", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
+		case "println", "print", "eprintln", "assert", "len", "read_bytes", "write_text", "bytes_to_string", "native_c":
 			for _, a := range c.Args {
 				b.checkExpr(a, false)
 				b.borrowRead(a)

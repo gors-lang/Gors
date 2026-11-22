@@ -349,26 +349,40 @@ func (e *MatchExpr) Pos() token.Pos { return e.At }
 
 // Terminates reports whether every path through a statement returns.
 func Terminates(s Stmt) bool {
+	return terminates(s, false)
+}
+
+// ExitsBlock reports whether control leaves the block before the next statement.
+func ExitsBlock(s Stmt) bool {
+	return terminates(s, true)
+}
+
+func terminates(s Stmt, loopControl bool) bool {
 	switch st := s.(type) {
 	case *ReturnStmt:
 		return true
+	case *BreakStmt, *ContinueStmt:
+		return loopControl
 	case *Block:
+		if st == nil {
+			return false
+		}
 		for _, s := range st.Stmts {
-			if Terminates(s) {
+			if terminates(s, loopControl) {
 				return true
 			}
 		}
 		return false
 	case *IfStmt:
-		return st.Else != nil && Terminates(st.Then) && Terminates(st.Else)
+		return st.Else != nil && terminates(st.Then, loopControl) && terminates(st.Else, loopControl)
 	case *IfLetStmt:
-		return st.Else != nil && Terminates(st.Then) && Terminates(st.Else)
+		return st.Else != nil && terminates(st.Then, loopControl) && terminates(st.Else, loopControl)
 	case *MatchStmt:
 		if len(st.Arms) != 2 {
 			return false
 		}
 		for _, a := range st.Arms {
-			if !Terminates(a.Body) {
+			if !terminates(a.Body, loopControl) {
 				return false
 			}
 		}

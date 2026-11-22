@@ -28,6 +28,13 @@ const prelude = `#include <stdio.h>
 
 typedef char* gors_str;
 
+[[maybe_unused]] static void gors_assert(bool condition, const char* message) {
+    if (!condition) {
+        fprintf(stderr, "gors: assertion failed: %s\n", message);
+        exit(1);
+    }
+}
+
 static inline void gors_oom(void) {
     fputs("gors: out of memory\n", stderr);
     exit(1);
@@ -1570,6 +1577,10 @@ func (g *gen) call(ex *ast.Call) string {
 			return g.printCall(ex.Args, false, false)
 		case "eprintln":
 			return g.printCall(ex.Args, true, true)
+		case "assert":
+			condition := g.temp()
+			g.line("bool %s = %s;", condition, g.expr(ex.Args[0]))
+			return "gors_assert(" + condition + ", " + g.strOperand(ex.Args[1]) + ")"
 		case "read_bytes":
 			return "gors_read_bytes(" + g.strOperand(ex.Args[0]) + ")"
 		case "write_text":
@@ -1803,7 +1814,7 @@ func (g *gen) isVoidCall(e ast.Expr) bool {
 	}
 	if id, ok := call.Fn.(*ast.Ident); ok {
 		switch id.Name {
-		case "println", "print", "eprintln", "push":
+		case "println", "print", "eprintln", "assert", "push":
 			return true
 		}
 		if sig, ok := g.info.Funcs[id.Name]; ok {

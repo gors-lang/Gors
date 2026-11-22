@@ -270,6 +270,13 @@ fn emit_call(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
         return emit_user_call(out, program, id, linked, "")
     }
     let tok = &program.graph.input.tokens[callee.first]
+    if program.word(tok.start, tok.end, [97, 115, 115, 101, 114, 116]) { // assert
+        let test = emit_expr(out, program, node.children[1])?
+        let condition = out.save(test)
+        let message = emit_expr(out, program, node.children[2])?
+        out.line("boot_assert(" + condition + ", " + message + ");")
+        return Ok("")
+    }
     let variant = program.variant(node.children[0])
     if variant == 3 {
         let typ = program.expr_types[id]
