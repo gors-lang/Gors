@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Bootstrap checks moves of owning values, restores a mutable binding on
+  reassignment, and checks conflicts with shared references and call arguments.
+- The main compiler also permits reinitializing a moved mutable binding
+  through whole-value assignment.
+- The bootstrap C23 emitter supports decimal `float` literals, float arithmetic
+  and comparisons, printing, and slices of floats.
+
 ## 1.0.0-alpha.4
 
 - The self-hosted bootstrap CLI supports `build <file> -o <executable>` and

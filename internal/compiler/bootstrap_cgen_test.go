@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gors/internal/compiler"
+	"gors/internal/sema"
 )
 
 func TestBootstrapCEmitter(t *testing.T) {
@@ -27,6 +28,22 @@ func TestBootstrapCEmitter(t *testing.T) {
 		}
 		return path
 	}
+	ownershipFixture := func(name, code, source string) string {
+		t.Helper()
+		path := write(name, source)
+		_, diagnostics := compiler.CompileFile(path, compiler.BackendC)
+		if code == "" && len(diagnostics) == 0 {
+			return path
+		}
+		for _, diagnostic := range diagnostics {
+			var semantic *sema.Error
+			if errors.As(diagnostic, &semantic) && semantic.Code == code {
+				return path
+			}
+		}
+		t.Fatalf("main compiler, %s: wanted diagnostic %q, got %v", name, code, diagnostics)
+		return path
+	}
 	cases := []struct {
 		name, path, stdout, stderr string
 		status                     int
@@ -35,6 +52,37 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"fib", filepath.Join("..", "..", "examples", "fib.gors"), "0\n1\n1\n2\n3\n5\n8\n13\n21\n34\n", "", 0, nil},
 		{"hello", filepath.Join("..", "..", "examples", "hello.gors"), "hello from GoRs\n", "", 0, nil},
 		{"Point by value", filepath.Join("..", "..", "examples", "point.gors"), "25\n", "", 0, nil},
+		{"ownership control flow", ownershipFixture("ownership control flow", "", `
+			fn take(xs: []int) {}
+			fn size(xs: &[]int) -> int { return len(*xs) }
+			fn update(flag: bool) -> int {
+				let mut values = [1]
+				take(values)
+				if flag { values = [1, 2] }
+				else { values = [1, 2, 3] }
+				let first = &values
+				let second = first
+				println(size(second))
+				push(&mut values, 4)
+				return len(values)
+			}
+			fn main() { println(update(true), update(false)) }
+		`), "2\n3\n3 4\n", "", 0, nil},
+		{"float arithmetic and slices", write("float arithmetic and slices", `
+			struct Sample { value: float }
+			fn scale(s: &Sample, factor: float) -> float {
+				return -(s.value * factor - 1.0) / 2.0
+			}
+			fn main() {
+				let point = Sample { value: 0_2.5_0 }
+				let value = scale(&point, 2.0)
+				println(value, value + 0.5, value < -1.5, 1.25 != 1.5, 1.5 == 1.5)
+				let mut values: []float = []
+				push(&mut values, value)
+				let mut copy = [values[0], 3.25, 4.5][1:]
+				copy[0] = 7.75
+				for item in copy { println(item) }
+			}`), "-2 -1.5 true true true\n7.75\n4.5\n", "", 0, nil},
 		{"struct slices and variants", write("struct slices and variants", `
 			struct Item { value: int }
 			struct Failure { message: string }
@@ -184,7 +232,8 @@ func TestBootstrapCEmitter(t *testing.T) {
 	}
 	bad := []struct{ name, path, message string }{
 		{"type error", write("type error", "fn main() { let x: bool = 1 }"), "initializer type mismatch"},
-		{"unsupported expression", write("unsupported expression", "fn main() { println(1.5) }"), "outside the C emitter subset"},
+		{"invalid float separator", write("invalid float separator", "fn main() { println(1.5_) }"), "invalid separator in float literal"},
+		{"float remainder", write("float remainder", "fn main() { println(1.5 % 1.0) }"), "operator does not accept this type"},
 		{"overflowing literal", write("overflowing literal", "fn main() { println(9223372036854775808) }"), "integer literal exceeds int"},
 		{"nested slices", write("nested slices", "fn main() { let xs = [[1]] }"), "nested slices are outside"},
 		{"immutable push", write("immutable push", "fn main() { let xs = [1]; push(&mut xs, 2) }"), "assignment to immutable name"},
@@ -206,8 +255,15 @@ func TestBootstrapCEmitter(t *testing.T) {
 		{"immutable field assignment", write("immutable field assignment", `struct A { x: int } fn main() { let a = A { x: 1 }; a.x = 2 }`), "assignment to immutable name"},
 		{"immutable receiver", write("immutable receiver", `struct A { x: int } fn (p: &mut A) set() { p.x = 2 } fn main() { let a = A { x: 1 }; a.set() }`), "assignment to immutable name"},
 		{"shared receiver write", write("shared receiver write", `struct A { x: int } fn (p: &A) set() { p.x = 2 } fn main() { }`), "assignment to immutable name"},
-		{"conflicting call borrows", write("conflicting call borrows", `struct A { x: int } fn f(p: &mut A, q: &A) {} fn main() { let mut a = A { x: 1 }; f(&mut a, &a) }`), "conflicting borrows in call"},
-		{"conflicting receiver borrow", write("conflicting receiver borrow", `struct A { x: int } fn (p: &mut A) f(q: &A) {} fn main() { let mut a = A { x: 1 }; a.f(&a) }`), "conflicting borrows in call"},
+		{"conflicting call borrows", ownershipFixture("conflicting call borrows", "E205", `struct A { x: int } fn f(p: &mut A, q: &A) {} fn main() { let mut a = A { x: 1 }; f(&mut a, &a) }`), "conflicting borrows in call"},
+		{"moved slice", ownershipFixture("moved slice", "E200", `fn take(xs: []int) {} fn main() { let xs = [1]; take(xs); println(len(xs)) }`), "use of moved value"},
+		{"moved string in one branch", ownershipFixture("moved string in one branch", "E200", `fn take(s: string) {} fn demo(flag: bool) { let s = "hi"; if flag { take(s) }; println(s) } fn main() {}`), "use of moved value"},
+		{"moved struct in match arm", ownershipFixture("moved struct in match arm", "E200", `struct A { x: int } fn take(a: A) {} fn main() { let a = A { x: 1 }; match Some(1) { Some(_) => { take(a) }, None => {} }; println(a.x) }`), "use of moved value"},
+		{"mutable borrow after shared alias", ownershipFixture("mutable borrow after shared alias", "E204", `fn main() { let mut xs = [1]; let r = &xs; let alias = r; push(&mut xs, 2); println(len(*alias)) }`), "value is still shared"},
+		{"assignment while shared", ownershipFixture("assignment while shared", "E206", `fn main() { let mut xs = [1]; let r = &xs; xs = [2]; println(len(*r)) }`), "value is still shared"},
+		{"move during call borrow", ownershipFixture("move during call borrow", "E203", `fn f(a: &[]int, b: []int) {} fn main() { let xs = [1]; f(&xs, xs) }`), "conflicting borrows in call"},
+		{"nested read during mutable call borrow", ownershipFixture("nested read during mutable call borrow", "E202", `fn f(a: &mut []int, n: int) {} fn main() { let mut xs = [1]; f(&mut xs, len(xs)) }`), "conflicting borrows in call"},
+		{"conflicting receiver borrow", ownershipFixture("conflicting receiver borrow", "E205", `struct A { x: int } fn (p: &mut A) f(q: &A) {} fn main() { let mut a = A { x: 1 }; a.f(&a) }`), "conflicting borrows in call"},
 		{"escaping reference", write("escaping reference", `struct A { x: int } fn f(p: &A) -> &A { return p } fn main() {}`), "returning references is outside"},
 		{"nonexhaustive Option", write("nonexhaustive Option", `fn main() { match Some(1) { Some(x) => println(x) } }`), "match must cover both Some and None"},
 		{"wrong try error type", write("wrong try error type", `

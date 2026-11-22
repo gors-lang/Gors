@@ -91,6 +91,30 @@ fn octal_byte(byte: int) -> string {
     return "\\" + digit(byte / 64) + digit(byte / 8 % 8) + digit(byte % 8)
 }
 
+fn floating(program: &sema::Checked, first: int) -> Result<string, imports::ParseError> {
+    let tok = &program.graph.input.tokens[first]
+    let mut bytes: []int = []
+    let mut i = tok.start
+    let mut after_digit = false
+    while i < tok.end {
+        let byte = program.graph.input.source[i]
+        if byte == 95 {
+            if !after_digit || i + 1 == tok.end {
+                return Err(program.issue(first, "invalid separator in float literal"))
+            }
+            let next = program.graph.input.source[i + 1]
+            if next < 48 || next > 57 {
+                return Err(program.issue(first, "invalid separator in float literal"))
+            }
+        } else {
+            push(&mut bytes, byte)
+        }
+        after_digit = byte >= 48 && byte <= 57
+        i = i + 1
+    }
+    return Ok(bytes_to_string(bytes))
+}
+
 fn quoted(program: &sema::Checked, first: int) -> string {
     let tok = &program.graph.input.tokens[first]
     let mut result = "BOOT_STRING(\""
@@ -119,9 +143,11 @@ fn quoted(program: &sema::Checked, first: int) -> string {
 fn base_type(typ: int) -> string {
     if typ == 0 { return "void" }
     if typ == 1 { return "int64_t" }
+    if typ == 2 { return "double" }
     if typ == 3 { return "bool" }
     if typ == 4 { return "boot_str" }
     if typ == 11 { return "boot_ints" }
+    if typ == 12 { return "boot_floats" }
     if typ == 13 { return "boot_bools" }
     if typ == 14 { return "boot_strings" }
     return ""
@@ -174,13 +200,13 @@ fn emit_structs(out: &mut Output, program: &sema::Checked) -> Result<bool, impor
 
 fn emit_struct_slices(out: &mut Output, program: &sema::Checked) {
     if len(program.struct_order) == 0 { return }
-    let mut make = "int64_t *: boot_make_ints, bool *: boot_make_bools, boot_str *: boot_make_strings"
-    let mut at = "boot_ints: boot_index_ints, boot_bools: boot_index_bools, boot_strings: boot_index_strings"
-    let mut append = "boot_ints *: boot_push_ints, boot_bools *: boot_push_bools, boot_strings *: boot_push_strings"
+    let mut make = "BOOT_MAKE_SCALARS"
+    let mut at = "BOOT_INDEX_SCALARS"
+    let mut append = "BOOT_PUSH_SCALARS"
     for index in program.struct_order {
         let tag = "boot_struct_" + decimal(index)
         let slice = "boot_struct_slice_" + decimal(index)
-        out.line("BOOT_STRUCT_SLICE(" + tag + ", " + slice + ")")
+        out.line("BOOT_DEFINE_SLICE(" + tag + ", " + slice + ")")
         make = make + ", " + tag + " *: boot_make_" + tag
         at = at + ", " + slice + ": boot_index_" + tag
         append = append + ", " + slice + " *: boot_push_" + tag
@@ -367,6 +393,11 @@ fn emit_binary(out: &mut Output, program: &sema::Checked, id: int) -> Result<str
         return Ok(name)
     }
     let right = emit_expr(out, program, node.children[1])?
+    if program.expr_types[node.children[0]] == 2 {
+        let text = "(" + left + " " + op + " " + right + ")"
+        if program.expr_types[id] == 3 { return Ok(out.save("(bool)" + text)) }
+        return Ok(out.save(text))
+    }
     if op == "+" { return Ok(out.save("BOOT_ADD(" + left + ", " + right + ")")) }
     if op == "==" { return Ok(out.save("BOOT_EQUAL(" + left + ", " + right + ")")) }
     if op == "!=" { return Ok(out.save("(bool)!BOOT_EQUAL(" + left + ", " + right + ")")) }
@@ -381,6 +412,7 @@ fn emit_binary(out: &mut Output, program: &sema::Checked, id: int) -> Result<str
 fn emit_expr(out: &mut Output, program: &sema::Checked, id: int) -> Result<string, imports::ParseError> {
     let node = &program.tree.nodes[id]
     if node.kind == "INT" { return integer(program, node.first) }
+    if node.kind == "FLOAT" { return floating(program, node.first) }
     if node.kind == "STRING" { return Ok(quoted(program, node.first)) }
     if node.kind == "true" || node.kind == "false" { return Ok("(bool)" + node.kind) }
     if node.kind == "name" {
@@ -425,6 +457,7 @@ fn emit_expr(out: &mut Output, program: &sema::Checked, id: int) -> Result<strin
     }
     if node.kind == "unary:-" {
         let value = emit_expr(out, program, node.children[0])?
+        if program.expr_types[id] == 2 { return Ok(out.save("-(" + value + ")")) }
         return Ok(out.save("(int64_t)(UINT64_C(0) - (uint64_t)" + value + ")"))
     }
     return Err(program.issue(node.first, "expression is outside the C emitter subset"))

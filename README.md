@@ -74,7 +74,7 @@ fn main() {
 | `gors`, written in Go | C23 and Go backends, file modules, structs and methods, `Option`, `Result`, and ownership checks |
 | `gors-bootstrap`, written in GoRs | A self-hosting lexer, parser, type checker, and C23 emitter. Its subset includes file modules, structs, methods, slices, references, `Option`, `Result`, and `?` |
 
-The bootstrap compiler can build its own sources and the bundled examples listed below with GCC. Import paths are normalized lexically. The bootstrap supports shared local references, mutable reference arguments, and by-value struct and slice payloads in `Option` and `Result`. Returned references, local mutable reference bindings, nested variants, floating-point emission, and the main compiler's full ownership checks are outside its current subset. [Bootstrap sources](bootstrap/)
+The bootstrap compiler can build its own sources and the bundled examples listed below with GCC. Import paths are normalized lexically. The bootstrap supports shared local references, mutable reference arguments, and by-value struct and slice payloads in `Option` and `Result`. On the development branch it also emits C23 for decimal `float` literals, arithmetic, comparisons, and `[]float`. It checks moves and borrow conflicts at the level of the root binding, including across call arguments and while a local shared reference is live. Returned references and local mutable reference bindings are still outside the bootstrap subset. [Bootstrap sources](bootstrap/)
 
 ## Reproduce the self-build
 

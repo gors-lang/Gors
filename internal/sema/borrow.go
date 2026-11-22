@@ -372,22 +372,28 @@ func (b *borrowChecker) checkStmt(s ast.Stmt) {
 		if !ok {
 			return
 		}
-		if v := b.lookup(root); v != nil {
+		_, whole := st.Target.(*ast.Ident)
+		v := b.lookup(root)
+		if v != nil {
 			if !v.mut && !isMutRef(v.typ) {
 				b.errf("E207", st.Target.Pos(), "cannot assign to %q: it is immutable (use `let mut %s`)", root, root)
-			}
-			if v.moved {
-				b.errf("E200", st.Target.Pos(), "use of moved value %q", root)
 			}
 			if l := b.activeLoan(root, false); l != nil {
 				b.errf("E206", st.Target.Pos(), "cannot assign to %q: it is borrowed", root)
 			}
-			v.moved = false
 		}
-		b.checkExpr(st.Target, false)
+		if !whole {
+			b.checkExpr(st.Target, false)
+		}
+		wasMoved := v != nil && v.moved
 		b.checkExpr(st.Value, true)
-		if v := b.lookup(root); v != nil {
+		if v == nil {
+			return
+		}
+		if whole {
 			v.moved = false
+		} else if !wasMoved && v.moved {
+			b.errf("E200", st.Target.Pos(), "use of moved value %q", root)
 		}
 
 	case *ast.ExprStmt:

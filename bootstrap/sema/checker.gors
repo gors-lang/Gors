@@ -13,6 +13,14 @@ struct Local {
     end: int,
     typ: int,
     mutable: bool,
+    moved: bool,
+    owner: int,
+    last_use: int,
+}
+
+struct Loan {
+    owner: int,
+    mutable: bool,
 }
 
 struct Scope {
@@ -21,6 +29,11 @@ struct Scope {
     loop_depth: int,
     return_type: int,
     types: []int,
+    name_uses: []bool,
+    loans: []Loan,
+    loan_count: int,
+    block_end: int,
+    loop_locals: int,
 }
 
 pub struct Checked {
@@ -178,7 +191,7 @@ fn (c: &Checked) local(scope: &Scope, start: int, end: int) -> int {
 fn (c: &Checked) define(scope: &mut Scope, start: int, end: int, typ: int, mutable: bool, token: int) -> Result<bool, imports::ParseError> {
     if c.word(start, end, [95]) { return Ok(true) } // _
     if c.local(&*scope, start, end) >= 0 { return Err(c.issue(token, "name already declared in this scope")) }
-    let binding = Local { start: start, end: end, typ: typ, mutable: mutable }
+    let binding = Local { start: start, end: end, typ: typ, mutable: mutable, moved: false, owner: -1, last_use: -1 }
     if scope.visible == len(scope.locals) {
         push(&mut scope.locals, binding)
     } else {
@@ -279,7 +292,7 @@ fn (c: &Checked) struct_literal(scope: &mut Scope, id: int) -> Result<int, impor
         if seen[field_index] { return Err(c.issue(init.first, "duplicate struct field initializer")) }
         seen[field_index] = true
         let expected = c.type_at(c.headers[index].bindings[field_index].type_token)?
-        let actual = c.expr(scope, init.children[1], expected)?
+        let actual = c.consume(scope, init.children[1], expected)?
         if actual != expected { return Err(c.issue(init.first, "struct field type mismatch")) }
         i = i + 1
     }
@@ -309,7 +322,8 @@ fn (c: &Checked) push_call(scope: &mut Scope, id: int) -> Result<int, imports::P
     let typ = dereference(borrow)
     if !is_mut_reference(borrow) || !is_slice(typ) { return Err(c.issue(c.tree.nodes[target].first, "push expects &mut slice")) }
     let elem = slice_element(typ)
-    let value = c.expr(scope, node.children[2], elem)?
+    let held = c.hold(scope, target, true)?
+    let value = c.consume(scope, node.children[2], elem)?
     if value != elem { return Err(c.issue(node.first, "push element type mismatch")) }
     return Ok(0)
 }
@@ -334,14 +348,19 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         if is_mut_reference(want) {
             let writable = c.writable_type(scope, recv)?
         }
-        return c.call_arguments(scope, id, index, recv, want)
+        if is_reference(want) {
+            let held = c.hold(scope, recv, is_mut_reference(want))?
+        } else {
+            let moved = c.move_value(scope, recv, want)?
+        }
+        return c.call_arguments(scope, id, index)
     }
     if callee.kind != "name" {
         return Err(c.issue(callee.first, "call is outside the bootstrap subset"))
     }
     if callee.next != callee.first + 1 {
         let imported = c.function(callee.first, callee.next)?
-        return c.call_arguments(scope, id, imported, -1, 0)
+        return c.call_arguments(scope, id, imported)
     }
     let tok = &c.graph.input.tokens[callee.first]
     let argc = len(node.children) - 1
@@ -351,7 +370,7 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         if argc != 1 { return Err(c.issue(callee.first, "Some expects one argument")) }
         let mut want = -1
         if is_option(expected) { want = option_payload(expected) }
-        let actual = c.expr(scope, node.children[1], want)?
+        let actual = c.consume(scope, node.children[1], want)?
         if !is_payload(actual) { return Err(c.issue(callee.first, "Option payload must be a scalar, struct, or slice")) }
         if want >= 0 && actual != want { return Err(c.issue(callee.first, "Option payload type mismatch")) }
         return Ok(option_type(actual))
@@ -360,7 +379,7 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         if !is_result(expected) { return Err(c.issue(callee.first, "Result constructor needs a Result type context")) }
         if argc != 1 { return Err(c.issue(callee.first, "Result constructor expects one argument")) }
         let want = result_variant_type(expected, variant)
-        let actual = c.expr(scope, node.children[1], want)?
+        let actual = c.consume(scope, node.children[1], want)?
         if actual != want { return Err(c.issue(c.tree.nodes[node.children[1]].first, "Result payload type mismatch")) }
         return Ok(expected)
     }
@@ -372,8 +391,8 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
     }
     if c.word(tok.start, tok.end, [119, 114, 105, 116, 101, 95, 116, 101, 120, 116]) { // write_text
         if argc != 2 { return Err(c.issue(callee.first, "write_text expects two arguments")) }
-        let path_type = c.expr(scope, node.children[1], 4)?
-        let text_type = c.expr(scope, node.children[2], 4)?
+        let path_type = c.read_arg(scope, node.children[1], 4)?
+        let text_type = c.read_arg(scope, node.children[2], 4)?
         if path_type != 4 || text_type != 4 { return Err(c.issue(callee.first, "write_text expects string arguments")) }
         return Ok(write_result_type())
     }
@@ -385,9 +404,9 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
     }
     if c.word(tok.start, tok.end, [110, 97, 116, 105, 118, 101, 95, 99]) { // native_c
         if argc != 3 { return Err(c.issue(callee.first, "native_c expects three arguments")) }
-        let source_type = c.expr(scope, node.children[1], 4)?
-        let output_type = c.expr(scope, node.children[2], 4)?
-        let args_type = c.expr(scope, node.children[3], 14)?
+        let source_type = c.read_arg(scope, node.children[1], 4)?
+        let output_type = c.read_arg(scope, node.children[2], 4)?
+        let args_type = c.read_arg(scope, node.children[3], 14)?
         if source_type != 4 || output_type != 4 || args_type != 14 {
             return Err(c.issue(callee.first, "native_c expects string, string and []string"))
         }
@@ -405,7 +424,8 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
         c.word(tok.start, tok.end, [101, 112, 114, 105, 110, 116, 108, 110]) { // eprintln
         let mut i = 1
         while i <= argc {
-            let arg_type = c.expr(scope, node.children[i], -1)?
+            let child = node.children[i]
+            let arg_type = c.read_arg(scope, child, -1)?
             if dereference(arg_type) < 1 || dereference(arg_type) > 4 { return Err(c.issue(callee.first, "print expects scalar values")) }
             i = i + 1
         }
@@ -414,7 +434,7 @@ fn (c: &Checked) call(scope: &mut Scope, id: int, expected: int) -> Result<int, 
     let index = c.function(callee.first, callee.next)?
     if index < 0 { return Err(c.issue(callee.first, "unknown function")) }
     if c.is_entry(index) { return Err(c.issue(callee.first, "main cannot be called")) }
-    return c.call_arguments(scope, id, index, -1, 0)
+    return c.call_arguments(scope, id, index)
 }
 
 fn (c: &Checked) root(id: int) -> int {
@@ -427,16 +447,109 @@ fn (c: &Checked) root(id: int) -> int {
     return -1
 }
 
-fn (c: &Checked) same_root(left: int, right: int) -> bool {
-    let a = c.root(left)
-    let b = c.root(right)
-    if a < 0 || b < 0 { return false }
-    let first = &c.graph.input.tokens[a]
-    let second = &c.graph.input.tokens[b]
-    return c.same_name(first.start, first.end, second.start, second.end)
+fn (c: &Checked) root_local(scope: &Scope, id: int) -> int {
+    let root = c.root(id)
+    if root < 0 { return -1 }
+    let token = &c.graph.input.tokens[root]
+    return c.local(scope, token.start, token.end)
 }
 
-fn (c: &Checked) call_arguments(scope: &mut Scope, id: int, index: int, recv: int, recv_type: int) -> Result<int, imports::ParseError> {
+fn (scope: &Scope) owner(index: int) -> int {
+    if index >= 0 && scope.locals[index].owner >= 0 { return scope.locals[index].owner }
+    return index
+}
+
+fn (c: &Checked) check_loan(scope: &Scope, owner: int, exclusive: bool, token: int) -> Result<bool, imports::ParseError> {
+    if owner < 0 { return Ok(true) }
+    let mut i = 0
+    while i < scope.loan_count {
+        if scope.loans[i].owner == owner && (exclusive || scope.loans[i].mutable) {
+            return Err(c.issue(token, "conflicting borrows in call or expression"))
+        }
+        i = i + 1
+    }
+    if exclusive {
+        let mut j = 0
+        while j < scope.visible {
+            let local = &scope.locals[j]
+            if local.owner == owner && local.last_use >= token {
+                return Err(c.issue(token, "conflicting borrow: value is still shared"))
+            }
+            j = j + 1
+        }
+    }
+    return Ok(true)
+}
+
+fn (c: &Checked) hold(scope: &mut Scope, id: int, mutable: bool) -> Result<bool, imports::ParseError> {
+    let owner = scope.owner(c.root_local(&*scope, id))
+    if owner < 0 { return Ok(true) }
+    let checked = c.check_loan(&*scope, owner, mutable, c.tree.nodes[id].first)?
+    let loan = Loan { owner: owner, mutable: mutable }
+    if scope.loan_count == len(scope.loans) { push(&mut scope.loans, loan) }
+    else { scope.loans[scope.loan_count] = loan }
+    scope.loan_count = scope.loan_count + 1
+    return Ok(true)
+}
+
+fn owning(typ: int) -> bool { return typ == 4 || is_struct(typ) || is_slice(typ) || is_option(typ) || is_result(typ) }
+
+fn (c: &Checked) read_arg(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+    let typ = c.expr(scope, id, expected)?
+    if owning(typ) || is_reference(typ) { let held = c.hold(scope, id, false)? }
+    return Ok(typ)
+}
+
+fn (c: &Checked) move_value(scope: &mut Scope, id: int, typ: int) -> Result<bool, imports::ParseError> {
+    if !owning(typ) || !c.place(id) { return Ok(true) }
+    let index = c.root_local(&*scope, id)
+    if index < 0 { return Ok(true) }
+    let token = c.tree.nodes[id].first
+    if is_reference(scope.locals[index].typ) { return Err(c.issue(token, "cannot move out of a borrowed value")) }
+    if index < scope.loop_locals { return Err(c.issue(token, "cannot move a value declared outside a repeating loop")) }
+    let checked = c.check_loan(&*scope, index, true, token)?
+    scope.locals[index].moved = true
+    return Ok(true)
+}
+
+fn (c: &Checked) consume(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+    let node = &c.tree.nodes[id]
+    if node.kind == "group" {
+        let typ = c.consume(scope, node.children[0], expected)?
+        scope.types[id] = typ
+        return Ok(typ)
+    }
+    if node.kind == "match_expression" {
+        let typ = c.check_match(scope, id, expected, true)?
+        scope.types[id] = typ
+        return Ok(typ)
+    }
+    let typ = c.expr(scope, id, expected)?
+    let moved = c.move_value(scope, id, typ)?
+    return Ok(typ)
+}
+
+fn (scope: &Scope) moved_flags() -> []bool {
+    let mut flags: []bool = []
+    let mut i = 0
+    while i < scope.visible {
+        push(&mut flags, scope.locals[i].moved)
+        i = i + 1
+    }
+    return flags
+}
+
+fn (scope: &mut Scope) restore_moves(flags: &[]bool) {
+    for index, moved in flags { scope.locals[index].moved = moved }
+}
+
+fn (scope: &mut Scope) merge_moves(flags: &[]bool) {
+    for index, moved in flags {
+        if moved { scope.locals[index].moved = true }
+    }
+}
+
+fn (c: &Checked) call_arguments(scope: &mut Scope, id: int, index: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let header = &c.headers[index]
     let argc = len(node.children) - 1
@@ -445,23 +558,10 @@ fn (c: &Checked) call_arguments(scope: &mut Scope, id: int, index: int, recv: in
     while i < argc {
         let want = c.type_at(header.bindings[i].type_token)?
         let child = node.children[i + 1]
-        let actual = c.expr(scope, child, want)?
+        let actual = c.consume(scope, child, want)?
         if actual != want { return Err(c.issue(c.tree.nodes[child].first, "argument type mismatch")) }
         if is_reference(actual) {
-            if recv >= 0 && is_reference(recv_type) &&
-                (is_mut_reference(actual) || is_mut_reference(recv_type)) && c.same_root(recv, child) {
-                return Err(c.issue(c.tree.nodes[child].first, "conflicting borrows in call"))
-            }
-            let mut j = 0
-            while j < i {
-                let prior = node.children[j + 1]
-                let prior_type = scope.types[prior]
-                if is_reference(prior_type) && (is_mut_reference(actual) || is_mut_reference(prior_type)) &&
-                    c.same_root(prior, child) {
-                    return Err(c.issue(c.tree.nodes[child].first, "conflicting borrows in call"))
-                }
-                j = j + 1
-            }
+            let held = c.hold(scope, child, is_mut_reference(actual))?
         }
         i = i + 1
     }
@@ -471,7 +571,14 @@ fn (c: &Checked) call_arguments(scope: &mut Scope, id: int, index: int, recv: in
 fn (c: &Checked) binary(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let left = c.expr(scope, node.children[0], -1)?
+    let loan_count = scope.loan_count
+    if owning(left) { let held = c.hold(scope, node.children[0], false)? }
+    let mut before: []bool = []
+    let short_circuit = node.kind == "binary:&&" || node.kind == "binary:||"
+    if short_circuit { before = scope.moved_flags() }
     let right = c.expr(scope, node.children[1], -1)?
+    scope.loan_count = loan_count
+    if short_circuit { scope.merge_moves(&before) }
     if left != right { return Err(c.issue(node.first, "binary operands have different types")) }
     if node.kind == "binary:&&" || node.kind == "binary:||" {
         if left == 3 { return Ok(3) }
@@ -495,7 +602,7 @@ fn (c: &Checked) slice_literal(scope: &mut Scope, id: int, expected: int) -> Res
     let mut elem = -1
     if is_slice(expected) { elem = slice_element(expected) }
     for child in node.children {
-        let actual = c.expr(scope, child, elem)?
+        let actual = c.consume(scope, child, elem)?
         if actual == 0 { return Err(c.issue(node.first, "slice elements must have values")) }
         if is_slice(actual) { return Err(c.issue(node.first, "nested slices are outside the bootstrap subset")) }
         if !is_struct(actual) && (actual < 1 || actual > 4) {
@@ -511,6 +618,8 @@ fn (c: &Checked) slice_literal(scope: &mut Scope, id: int, expected: int) -> Res
 fn (c: &Checked) subscript(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let base = dereference(c.expr(scope, node.children[0], -1)?)
+    let loan_count = scope.loan_count
+    if node.kind == "slice" { let held = c.hold(scope, node.children[0], false)? }
     let mut i = 1
     while i < len(node.children) {
         let child = node.children[i]
@@ -520,6 +629,7 @@ fn (c: &Checked) subscript(scope: &mut Scope, id: int) -> Result<int, imports::P
         }
         i = i + 1
     }
+    scope.loan_count = loan_count
     if node.kind == "index" && is_slice(base) { return Ok(slice_element(base)) }
     if node.kind == "slice" {
         if base == 4 || (base >= 11 && base <= 13) { return Ok(base) }
@@ -548,6 +658,8 @@ fn (c: &Checked) raw_expr(scope: &mut Scope, id: int, expected: int) -> Result<i
         }
         let index = c.local(&*scope, tok.start, tok.end)
         if index < 0 { return Err(c.issue(node.first, "unknown local name")) }
+        if scope.locals[index].moved { return Err(c.issue(node.first, "use of moved value")) }
+        let checked = c.check_loan(&*scope, scope.owner(index), false, node.first)?
         return Ok(scope.locals[index].typ)
     }
     if node.kind == "group" { return c.expr(scope, node.children[0], expected) }
@@ -566,7 +678,7 @@ fn (c: &Checked) raw_expr(scope: &mut Scope, id: int, expected: int) -> Result<i
         return Ok(dereference(inner))
     }
     if node.kind == "try" {
-        let result = c.expr(scope, node.children[0], -1)?
+        let result = c.consume(scope, node.children[0], -1)?
         if !is_result(result) || !is_result(scope.return_type) {
             return Err(c.issue(node.first, "? requires a Result operand and return type"))
         }
@@ -575,13 +687,18 @@ fn (c: &Checked) raw_expr(scope: &mut Scope, id: int, expected: int) -> Result<i
         }
         return Ok(result_variant_type(result, 1))
     }
-    if node.kind == "call" { return c.call(scope, id, expected) }
+    if node.kind == "call" {
+        let loan_count = scope.loan_count
+        let typ = c.call(scope, id, expected)?
+        scope.loan_count = loan_count
+        return Ok(typ)
+    }
     if node.kind == "struct_literal" { return c.struct_literal(scope, id) }
     if node.kind == "field" {
         let base = c.expr(scope, node.children[0], -1)?
         return c.field_type(base, node.children[1])
     }
-    if node.kind == "match_expression" { return c.check_match(scope, id, expected) }
+    if node.kind == "match_expression" { return c.check_match(scope, id, expected, false) }
     if node.kind == "slice_literal" { return c.slice_literal(scope, id, expected) }
     if node.kind == "index" || node.kind == "slice" { return c.subscript(scope, id) }
     if node.kind == "unary:!" || node.kind == "unary:-" {
@@ -594,11 +711,16 @@ fn (c: &Checked) raw_expr(scope: &mut Scope, id: int, expected: int) -> Result<i
     return Err(c.issue(node.first, "expression is outside the bootstrap subset"))
 }
 
-fn (c: &Checked) arm_expression(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) arm_expression(scope: &mut Scope, id: int, expected: int, moving: bool) -> Result<int, imports::ParseError> {
     let body = &c.tree.nodes[id]
-    if body.kind != "block" { return c.expr(scope, id, expected) }
+    if body.kind != "block" {
+        if moving { return c.consume(scope, id, expected) }
+        return c.expr(scope, id, expected)
+    }
     let count = len(body.children)
     if count == 0 { return Err(c.issue(body.first, "match expression arm needs a value")) }
+    let saved_end = scope.block_end
+    scope.block_end = body.next
     let mut i = 0
     while i + 1 < count {
         let returns = c.stmt(scope, body.children[i])?
@@ -607,14 +729,18 @@ fn (c: &Checked) arm_expression(scope: &mut Scope, id: int, expected: int) -> Re
     }
     let tail = &c.tree.nodes[body.children[count - 1]]
     if tail.kind != "expr_stmt" { return Err(c.issue(tail.first, "match expression arm needs a value")) }
-    return c.expr(scope, tail.children[0], expected)
+    let mut typ = 0
+    if moving { typ = c.consume(scope, tail.children[0], expected)? }
+    else { typ = c.expr(scope, tail.children[0], expected)? }
+    scope.block_end = saved_end
+    return Ok(typ)
 }
 
 // A statement match reports -2 if both arms return, otherwise 0.
 // An expression match reports the common value type.
-fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Result<int, imports::ParseError> {
+fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int, moving: bool) -> Result<int, imports::ParseError> {
     let node = &c.tree.nodes[id]
-    let subject = c.expr(scope, node.children[0], -1)?
+    let subject = c.consume(scope, node.children[0], -1)?
     let optional = is_option(subject)
     if !is_result(subject) && !optional { return Err(c.issue(node.first, "bootstrap match expects Option or Result")) }
     let mut first_variant = 1
@@ -624,6 +750,9 @@ fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Resul
     let mut saw_err = false
     let mut all_return = true
     let mut value_type = expected
+    let before = scope.moved_flags()
+    let mut merged: []bool = []
+    let mut has_continuation = false
     let mut i = 1
     while i < len(node.children) {
         let arm = &c.tree.nodes[node.children[i]]
@@ -644,32 +773,39 @@ fn (c: &Checked) check_match(scope: &mut Scope, id: int, expected: int) -> Resul
         if variant == first_variant { saw_ok = true }
         else { saw_err = true }
         let visible = scope.visible
+        scope.restore_moves(&before)
         if pattern.children[1] >= 0 {
             let mut payload = option_payload(subject)
             if !optional { payload = result_variant_type(subject, variant) }
             let bound = c.define_node(scope, pattern.children[1], payload, false)?
         }
         let body = &c.tree.nodes[arm.children[1]]
+        let mut returns = false
         if is_expression {
-            let actual = c.arm_expression(scope, arm.children[1], value_type)?
+            let actual = c.arm_expression(scope, arm.children[1], value_type, moving)?
             if is_reference(actual) { return Err(c.issue(body.first, "match expressions cannot return references in bootstrap")) }
             if actual == 0 { return Err(c.issue(body.first, "match expression arm needs a value")) }
             if value_type < 0 { value_type = actual }
             if actual != value_type { return Err(c.issue(body.first, "match arms have different types")) }
         } else if body.kind == "block" {
-            let returns = c.block(scope, arm.children[1])?
-            all_return = all_return && returns
+            returns = c.block(scope, arm.children[1])?
         } else {
             let unused = c.expr(scope, arm.children[1], -1)?
-            all_return = false
         }
         scope.visible = visible
+        all_return = all_return && returns
+        if !returns {
+            if has_continuation { scope.merge_moves(&merged) }
+            merged = scope.moved_flags()
+            has_continuation = true
+        }
         i = i + 1
     }
     if !saw_ok || !saw_err {
         if optional { return Err(c.issue(node.first, "match must cover both Some and None")) }
         return Err(c.issue(node.first, "match must cover both Ok and Err"))
     }
+    if has_continuation { scope.restore_moves(&merged) }
     if is_expression { return Ok(value_type) }
     if all_return { return Ok(-2) }
     return Ok(0)
@@ -679,11 +815,34 @@ fn (c: &Checked) let_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::P
     let node = &c.tree.nodes[id]
     let mut expected = -1
     if node.children[1] >= 0 { expected = c.type_at(c.tree.nodes[node.children[1]].first)? }
-    let actual = c.expr(scope, node.children[2], expected)?
+    let actual = c.consume(scope, node.children[2], expected)?
     if is_mut_reference(actual) { return Err(c.issue(node.first, "local mutable reference bindings are outside the bootstrap subset")) }
     if actual == 0 { return Err(c.issue(node.first, "initializer must have a value")) }
     if expected >= 0 && actual != expected { return Err(c.issue(node.first, "initializer type mismatch")) }
+    let index = scope.visible
     let installed = c.define_node(scope, node.children[0], actual, node.kind == "let_mut")?
+    if is_reference(actual) && scope.visible > index {
+        let owner = scope.owner(c.root_local(&*scope, node.children[2]))
+        if owner >= 0 {
+            scope.locals[index].owner = owner
+            let local = &scope.locals[index]
+            let mut last = -1
+            for use_index, use in c.tree.nodes {
+                if !scope.name_uses[use_index] || use.first < node.next || use.first >= scope.block_end { continue }
+                let token = &c.graph.input.tokens[use.first]
+                if use.first > last && c.same_name(local.start, local.end, token.start, token.end) { last = use.first }
+            }
+            // A reference used in a repeating loop stays live through its back edge.
+            let mut live_until = last
+            for loop in c.tree.nodes {
+                if (loop.kind == "while" || loop.kind == "for") &&
+                    loop.first >= node.next && loop.first <= last && last < loop.next && loop.next - 1 > live_until {
+                    live_until = loop.next - 1
+                }
+            }
+            scope.locals[index].last_use = live_until
+        }
+    }
     return Ok(false)
 }
 
@@ -697,6 +856,8 @@ fn (c: &Checked) place(id: int) -> bool {
 }
 
 fn (c: &Checked) writable_type(scope: &mut Scope, id: int) -> Result<int, imports::ParseError> {
+    let owner = scope.owner(c.root_local(&*scope, id))
+    let checked = c.check_loan(&*scope, owner, true, c.tree.nodes[id].first)?
     let typ = c.raw_writable_type(scope, id)?
     scope.types[id] = typ
     return Ok(typ)
@@ -728,18 +889,39 @@ fn (c: &Checked) raw_writable_type(scope: &mut Scope, id: int) -> Result<int, im
 
 fn (c: &Checked) assign(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
-    let expected = c.writable_type(scope, node.children[0])?
+    let mut target = node.children[0]
+    while c.tree.nodes[target].kind == "group" { target = c.tree.nodes[target].children[0] }
+    let mut expected = 0
+    let mut index = -1
+    if c.tree.nodes[target].kind == "name" {
+        index = c.root_local(&*scope, target)
+        expected = c.mutable_local(&*scope, target)?
+        scope.types[node.children[0]] = expected
+        scope.types[target] = expected
+    } else { expected = c.writable_type(scope, node.children[0])? }
     if is_reference(expected) { return Err(c.issue(node.first, "cannot reassign a reference parameter")) }
-    let actual = c.expr(scope, node.children[1], expected)?
+    let actual = c.consume(scope, node.children[1], expected)?
     if actual != expected { return Err(c.issue(node.first, "assignment type mismatch")) }
+    if index >= 0 {
+        let checked = c.check_loan(&*scope, index, true, node.next)?
+        scope.locals[index].moved = false
+    } else {
+        let root = c.root_local(&*scope, target)
+        if root >= 0 && scope.locals[root].moved { return Err(c.issue(node.first, "use of moved value")) }
+    }
     return Ok(false)
 }
 
 fn (c: &Checked) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
+    let loop_locals = scope.loop_locals
+    scope.loop_locals = scope.visible
     let iter = dereference(c.expr(scope, node.children[2], -1)?)
     if !is_slice(iter) { return Err(c.issue(node.first, "for expects a slice")) }
     let visible = scope.visible
+    let before = scope.moved_flags()
+    let loan_count = scope.loan_count
+    let held = c.hold(scope, node.children[2], false)?
     if node.children[0] >= 0 {
         let key_bound = c.define_node(scope, node.children[0], 1, false)?
     }
@@ -751,6 +933,9 @@ fn (c: &Checked) for_stmt(scope: &mut Scope, id: int) -> Result<bool, imports::P
     let done = c.block(scope, node.children[3])?
     scope.loop_depth = scope.loop_depth - 1
     scope.visible = visible
+    scope.loan_count = loan_count
+    scope.loop_locals = loop_locals
+    scope.merge_moves(&before)
     return Ok(false)
 }
 
@@ -767,7 +952,7 @@ fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
         let mut actual = 0
         let expected_type = scope.return_type
         if len(node.children) > 0 {
-            actual = c.expr(scope, node.children[0], expected_type)?
+            actual = c.consume(scope, node.children[0], expected_type)?
             if actual == 0 { return Err(c.issue(node.first, "return expression must have a value")) }
         }
         if actual != scope.return_type { return Err(c.issue(node.first, "return type mismatch")) }
@@ -776,22 +961,32 @@ fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
     if node.kind == "if" {
         let cond = c.expr(scope, node.children[1], 3)?
         if cond != 3 { return Err(c.issue(node.first, "if condition must be bool")) }
+        let before = scope.moved_flags()
         let then_returns = c.block(scope, node.children[2])?
+        let then_moves = scope.moved_flags()
+        scope.restore_moves(&before)
         let mut else_returns = false
         if node.children[3] >= 0 { else_returns = c.stmt(scope, node.children[3])? }
+        if else_returns { scope.restore_moves(&then_moves) }
+        else if !then_returns { scope.merge_moves(&then_moves) }
         return Ok(then_returns && else_returns)
     }
     if node.kind == "while" {
+        let loop_locals = scope.loop_locals
+        scope.loop_locals = scope.visible
         let cond = c.expr(scope, node.children[0], 3)?
         if cond != 3 { return Err(c.issue(node.first, "while condition must be bool")) }
+        let before = scope.moved_flags()
         scope.loop_depth = scope.loop_depth + 1
         let done = c.block(scope, node.children[1])?
         scope.loop_depth = scope.loop_depth - 1
+        scope.loop_locals = loop_locals
+        scope.merge_moves(&before)
         return Ok(false)
     }
     if node.kind == "for" { return c.for_stmt(scope, id) }
     if node.kind == "match_statement" {
-        let result = c.check_match(scope, id, -1)?
+        let result = c.check_match(scope, id, -1, false)?
         return Ok(result == -2)
     }
     if node.kind == "break" || node.kind == "continue" {
@@ -804,20 +999,43 @@ fn (c: &Checked) stmt(scope: &mut Scope, id: int) -> Result<bool, imports::Parse
 fn (c: &Checked) block(scope: &mut Scope, id: int) -> Result<bool, imports::ParseError> {
     let node = &c.tree.nodes[id]
     let visible = scope.visible
+    let saved_end = scope.block_end
+    scope.block_end = node.next
     let mut returns = false
     for child in node.children {
         if returns { return Err(c.issue(c.tree.nodes[child].first, "unreachable statement after return")) }
         returns = c.stmt(scope, child)?
     }
     scope.visible = visible
+    scope.block_end = saved_end
     return Ok(returns)
+}
+
+fn (c: &Checked) local_name_uses() -> []bool {
+    let mut uses: []bool = []
+    for node in c.tree.nodes { push(&mut uses, node.kind == "name" && node.next == node.first + 1) }
+    for node in c.tree.nodes {
+        if node.kind == "call" || node.kind == "struct_literal" || node.kind == "initializer" ||
+            node.kind == "let" || node.kind == "let_mut" || node.kind == "pattern" {
+            uses[node.children[0]] = false
+        } else if node.kind == "for" && node.children[0] >= 0 {
+            uses[node.children[0]] = false
+        }
+        if node.kind == "field" || node.kind == "for" || (node.kind == "pattern" && node.children[1] >= 0) {
+            uses[node.children[1]] = false
+        }
+    }
+    return uses
 }
 
 fn (c: &Checked) check() -> Result<[]int, imports::ParseError> {
     let mut has_main = false
     let mut types: []int = []
     for _ in c.tree.nodes { push(&mut types, 0) }
-    let mut scope = Scope { locals: [], visible: 0, loop_depth: 0, return_type: 0, types: types }
+    let mut scope = Scope {
+        locals: [], visible: 0, loop_depth: 0, return_type: 0, types: types,
+        name_uses: c.local_name_uses(), loans: [], loan_count: 0, block_end: 0, loop_locals: 0,
+    }
     let mut i = 0
     for header_index, header in c.headers {
         if header.kind != "fn" { continue }
